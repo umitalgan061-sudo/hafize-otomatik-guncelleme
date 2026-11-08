@@ -2,298 +2,380 @@ name: CI/CD Pipeline - Hafize Otomatik Güncelleme
 
 on:
   schedule:
+    # Her 30 dakikada bir çalış (0, 30 dakika)
     - cron: '*/30 * * * *'
   push:
-    branches: [main]
+    branches:
+      - main
+    paths-ignore:
+      - '**.md'
+      - '.github/workflows/**'
   workflow_dispatch:
-
-permissions:
-  contents: read
-  id-token: write
+    inputs:
+      forceDeploy:
+        description: 'Zorla deploy et (testleri atla)'
+        type: boolean
+        required: false
+        default: false
+      rollback:
+        description: 'Son başarılı release\'e rollback yap'
+        type: boolean
+        required: false
+        default: false
 
 env:
-  FIREBASE_PROJECT_ID: ${{ secrets.FIREBASE_PROJECT_ID }}
   NODE_VERSION: '20'
+  FIREBASE_PROJECT_ID: ${{ secrets.FIREBASE_PROJECT_ID }}
+  GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
 jobs:
-  lint-and-test:
-    name: Lint ve Test
+  # 1. Lint ve kod kalitesi kontrolü
+  lint:
+    name: Lint & Type Check
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
-      - name: Depoyu checkout et
+      - name: Checkout repository
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
-      - name: Node.js kur
+      - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
           node-version: ${{ env.NODE_VERSION }}
           cache: 'npm'
+          cache-dependency-path: package-lock.json
 
-      - name: Bağımlılıkları kur
-        run: npm ci --prefer-offline --no-audit --progress=false
+      - name: Install dependencies
+        run: npm ci --prefer-offline --no-audit --no-fund
+        timeout-minutes: 5
 
-      - name: Lint çalıştır
-        run: npm run lint --if-present || true
+      - name: Run ESLint
+        run: npx eslint . --ext .js --max-warnings 0
+        continue-on-error: false
 
-      - name: Testleri çalıştır
-        run: npm test --if-present -- --passWithNoTests || true
+      - name: Check formatting (Prettier)
+        run: npx prettier --check .
+        continue-on-error: false
 
-  build:
-    name: Build
+  # 2. Testleri çalıştır
+  test:
+    name: Run Tests
     runs-on: ubuntu-latest
-    needs: lint-and-test
+    timeout-minutes: 15
+    needs: lint
     steps:
-      - name: Depoyu checkout et
+      - name: Checkout repository
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
-      - name: Node.js kur
+      - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
           node-version: ${{ env.NODE_VERSION }}
           cache: 'npm'
+          cache-dependency-path: package-lock.json
 
-      - name: Bağımlılıkları kur
-        run: npm ci --prefer-offline --no-audit --progress=false
+      - name: Install dependencies
+        run: npm ci --prefer-offline --no-audit --no-fund
+        timeout-minutes: 5
 
-      - name: Production build al
-        run: npm run build --if-present || echo "Build scripti yok, statik dosyalar olduğu gibi deploy edilecek"
+      - name: Run unit tests
+        run: npm test -- --run --reporter=verbose
+        env:
+          CI: true
+        continue-on-error: false
 
-      - name: Build artifact'ını yükle
+      - name: Run E2E tests (headless)
+        run: npx playwright test --reporter=line
+        continue-on-error: true
+
+      - name: Upload test artifacts
         uses: actions/upload-artifact@v4
+        if: always()
         with:
-          name: firebase-deploy-package
+          name: test-results
           path: |
-            **/*
-            !node_modules
-            !.github
-            !.git
+            test-results/
+            playwright-report/
           retention-days: 7
 
-  deploy-firebase:
-    name: Firebase Deploy
+  # 3. Build işlemi
+  build:
+    name: Build Application
     runs-on: ubuntu-latest
-    needs: build
+    timeout-minutes: 10
+    needs: test
     steps:
-      - name: Deploy artifact'ını indir
-        uses: actions/download-artifact@v4
+      - name: Checkout repository
+        uses: actions/checkout@v4
         with:
-          name: firebase-deploy-package
-          path: deploy-package
+          fetch-depth: 0
 
-      - name: Firebase CLI kur
-        run: npm install -g firebase-tools@13.9.0
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+          cache-dependency-path: package-lock.json
 
-      - name: Firebase'e deploy et
-        id: firebase-deploy
+      - name: Install dependencies
+        run: npm ci --prefer-offline --no-audit --no-fund
+        timeout-minutes: 5
+
+      - name: Build production bundle
+        run: npm run build
         env:
-          FIREBASE_SERVICE_ACCOUNT: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
-        run: |
-          echo "${FIREBASE_SERVICE_ACCOUNT}" > /tmp/firebase-service-account.json
-          export GOOGLE_APPLICATION_CREDENTIALS=/tmp/firebase-service-account.json
-          cd deploy-package
-          firebase deploy --project="${FIREBASE_PROJECT_ID}" --only=hosting --non-interactive
+          NODE_ENV: production
+          GITHUB_SHA: ${{ github.sha }}
+          GITHUB_REF: ${{ github.ref }}
+          BUILD_TIME: ${{ github.event.workflow_run.run_started_at || github.event.head_commit.timestamp }}
 
-      - name: Başarılı release SHA'sını kaydet
-        if: success()
+      - name: Verify build output
         run: |
-          echo "LAST_SUCCESS_SHA=${{ github.sha }}" >> $GITHUB_ENV
-          echo "LAST_SUCCESS_RUN_ID=${{ github.run_id }}" >> $GITHUB_ENV
-          echo "DEPLOY_URL=https://${FIREBASE_PROJECT_ID}.web.app" >> $GITHUB_ENV
+          if [ ! -d "dist" ] && [ ! -d "build" ] && [ ! -d "public" ]; then
+            echo "❌ Build output klasörü bulunamadı (dist/build/public)"
+            exit 1
+          fi
+          echo "✅ Build çıktısı doğrulandı"
 
-      - name: Son başarılı SHA'yı artifact olarak sakla
-        if: success()
+      - name: Upload build artifact
         uses: actions/upload-artifact@v4
         with:
-          name: last-successful-deploy
-          path: deploy-package
-          retention-days: 30
+          name: build-output
+          path: |
+            dist/
+            build/
+            public/
+          retention-days: 7
 
-  rollback:
-    name: Rollback (Hata Durumunda)
+  # 4. Deploy to Firebase Hosting
+  deploy:
+    name: Deploy to Firebase Hosting
     runs-on: ubuntu-latest
-    needs: deploy-firebase
-    if: failure()
+    timeout-minutes: 15
+    needs: build
+    if: github.event_name != 'schedule' || github.repository == 'umitalgan061-sudo/hafize-otomatik-guncelleme'
     steps:
-      - name: Son başarılı deploy artifact'ını indir
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Download build artifact
         uses: actions/download-artifact@v4
         with:
-          name: last-successful-deploy
-          path: rollback-package
+          name: build-output
+          path: ./dist
 
-      - name: jq kur (JSON parse için)
-        run: sudo apt-get update && sudo apt-get install -y jq
+      - name: Setup Firebase CLI
+        uses: firebase-actions/setup-firebase@v1
+        with:
+          version: 'latest'
 
-      - name: Firebase CLI kur
-        run: npm install -g firebase-tools@13.9.0
-
-      - name: Firebase release listesini al
-        id: releases
+      - name: Deploy to Firebase Hosting
+        id: firebase-deploy
+        uses: FirebaseExtended/action-hosting-deploy@v0
+        with:
+          repoToken: ${{ secrets.GITHUB_TOKEN }}
+          firebaseServiceAccount: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
+          projectId: ${{ env.FIREBASE_PROJECT_ID }}
+          channelId: live
+          entryPoint: ./dist
+          expires: 30d
         env:
-          FIREBASE_SERVICE_ACCOUNT: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
-        run: |
-          echo "${FIREBASE_SERVICE_ACCOUNT}" > /tmp/firebase-service-account.json
-          export GOOGLE_APPLICATION_CREDENTIALS=/tmp/firebase-service-account.json
-          RELEASES=$(firebase hosting:releases:list --project="${FIREBASE_PROJECT_ID}" --json 2>/dev/null || echo '{"releases":[]}')
-          echo "releases_json<<EOF" >> $GITHUB_OUTPUT
-          echo "$RELEASES" >> $GITHUB_OUTPUT
-          echo "EOF" >> $GITHUB_OUTPUT
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Son başarılı release'i bul ve rollback et
-        env:
-          FIREBASE_SERVICE_ACCOUNT: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
-          RELEASES_JSON: ${{ steps.releases.outputs.releases_json }}
+      - name: Record deployment metadata
         run: |
-          echo "${FIREBASE_SERVICE_ACCOUNT}" > /tmp/firebase-service-account.json
-          export GOOGLE_APPLICATION_CREDENTIALS=/tmp/firebase-service-account.json
-          
-          # JSON'dan son başarılı release'i parse et
-          LAST_SUCCESS=$(echo "$RELEASES_JSON" | jq -r '.releases[] | select(.type=="RELEASE" and .version.name != "") | .version.name' | head -n 1)
-          
-          if [ -n "$LAST_SUCCESS" ] && [ "$LAST_SUCCESS" != "null" ]; then
-            echo "Rollback yapılıyor: $LAST_SUCCESS"
-            firebase hosting:clone --project="${FIREBASE_PROJECT_ID}" --source="${LAST_SUCCESS}" --target="live"
-            echo "Rollback tamamlandı: $LAST_SUCCESS"
-          else
-            echo "Rollback için başarılı release bulunamadı, artifact'tan yeniden deploy deneniyor..."
-            cd rollback-package
-            firebase deploy --project="${FIREBASE_PROJECT_ID}" --only=hosting --non-interactive
-          fi
+          echo "DEPLOY_URL=${{ steps.firebase-deploy.outputs.details_url }}" >> $GITHUB_ENV
+          echo "DEPLOY_TIME=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> $GITHUB_ENV
+          echo "COMMIT_SHA=${{ github.sha }}" >> $GITHUB_ENV
 
-      - name: Rollback bilgisi kaydet (dashboard için)
+      - name: Notify on success
         if: success()
         run: |
-          echo "ROLLBACK_EXECUTED=true" >> $GITHUB_ENV
-          echo "ROLLBACK_TIMESTAMP=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> $GITHUB_ENV
-          echo "ROLLBACK_REASON=Deploy failed, auto rollback triggered" >> $GITHUB_ENV
+          echo "✅ Deploy başarılı: ${{ env.DEPLOY_URL }}"
+          echo "🕐 Deploy zamanı: ${{ env.DEPLOY_TIME }}"
+          echo "📦 Commit: ${{ env.COMMIT_SHA }}"
 
-      - name: Rollback bildirimi
-        run: |
-          echo "🔄 Rollback gerçekleştirildi. Workflow: ${{ github.workflow }} Run: ${{ github.run_id }}"
-          echo "Deploy URL: https://${FIREBASE_PROJECT_ID}.web.app"
-          echo "Rollback zaman damgası: $(date -u +%Y-%m-%dT%H:%M:%SZ)"
-
-  status-badge:
-    name: Status Badge Oluştur
+  # 5. Rollback on failure
+  rollback-on-failure:
+    name: Rollback on Failure
     runs-on: ubuntu-latest
-    needs: [deploy-firebase, rollback]
+    timeout-minutes: 10
+    needs: deploy
+    if: failure() && needs.deploy.result == 'failure'
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Firebase CLI
+        uses: firebase-actions/setup-firebase@v1
+        with:
+          version: 'latest'
+
+      - name: Get last successful release
+        id: get-release
+        run: |
+          echo "🔍 Son başarılı release aranıyor..."
+          RELEASES=$(firebase hosting:releases:list --project=${{ env.FIREBASE_PROJECT_ID }} --json 2>/dev/null | jq -r '.releases[] | select(.type=="RELEASE" and .releaseTime) | .name' | head -5)
+          if [ -z "$RELEASES" ]; then
+            echo "❌ Hiç başarılı release bulunamadı"
+            exit 1
+          fi
+          LAST_SUCCESS=$(echo "$RELEASES" | head -1)
+          echo "✅ Son başarılı release: $LAST_SUCCESS"
+          echo "release_name=$LAST_SUCCESS" >> $GITHUB_OUTPUT
+
+      - name: Trigger rollback (clone last successful release)
+        run: |
+          echo "🔄 Rollback tetikleniyor: ${{ steps.get-release.outputs.release_name }}"
+          firebase hosting:clone ${{ steps.get-release.outputs.release_name }} --project=${{ env.FIREBASE_PROJECT_ID }}
+          echo "✅ Rollback tamamlandı"
+
+      - name: Notify rollback
+        run: |
+          echo "⚠️ Deploy başarısız, rollback yapıldı"
+          echo "🔄 Geri alınan release: ${{ steps.get-release.outputs.release_name }}"
+          echo "🕐 Rollback zamanı: $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+
+  # 6. Manual rollback trigger (workflow_dispatch ile)
+  manual-rollback:
+    name: Manual Rollback
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    if: github.event.inputs.rollback == 'true'
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Firebase CLI
+        uses: firebase-actions/setup-firebase@v1
+        with:
+          version: 'latest'
+
+      - name: Get last successful release
+        id: get-release
+        run: |
+          RELEASES=$(firebase hosting:releases:list --project=${{ env.FIREBASE_PROJECT_ID }} --json 2>/dev/null | jq -r '.releases[] | select(.type=="RELEASE" and .releaseTime) | .name' | head -1)
+          if [ -z "$RELEASES" ]; then
+            echo "❌ Hiç başarılı release bulunamadı"
+            exit 1
+          fi
+          echo "release_name=$RELEASES" >> $GITHUB_OUTPUT
+
+      - name: Trigger rollback
+        run: |
+          firebase hosting:clone ${{ steps.get-release.outputs.release_name }} --project=${{ env.FIREBASE_PROJECT_ID }}
+          echo "✅ Manuel rollback tamamlandı: ${{ steps.get-release.outputs.release_name }}"
+
+  # 7. Status badge ve metadata güncelleme
+  update-status:
+    name: Update Status & Badges
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    needs: [deploy, rollback-on-failure]
     if: always()
     steps:
-      - name: Workflow durumunu belirle
+      - name: Determine workflow status
         id: status
         run: |
-          if [ "${{ needs.deploy-firebase.result }}" = "success" ]; then
+          if [ "${{ needs.deploy.result }}" == "success" ]; then
             echo "status=success" >> $GITHUB_OUTPUT
-            echo "color=brightgreen" >> $GITHUB_OUTPUT
-            echo "label=deploy" >> $GITHUB_OUTPUT
-          elif [ "${{ needs.rollback.result }}" = "success" ]; then
+            echo "badge=success" >> $GITHUB_OUTPUT
+            echo "message=Deploy başarılı" >> $GITHUB_OUTPUT
+          elif [ "${{ needs.rollback-on-failure.result }}" == "success" ]; then
             echo "status=rollback" >> $GITHUB_OUTPUT
-            echo "color=orange" >> $GITHUB_OUTPUT
-            echo "label=rollback" >> $GITHUB_OUTPUT
-          elif [ "${{ needs.deploy-firebase.result }}" = "failure" ] && [ "${{ needs.rollback.result }}" = "failure" ]; then
-            echo "status=failed" >> $GITHUB_OUTPUT
-            echo "color=red" >> $GITHUB_OUTPUT
-            echo "label=failed" >> $GITHUB_OUTPUT
+            echo "badge=warning" >> $GITHUB_OUTPUT
+            echo "message=Deploy başarısız, rollback yapıldı" >> $GITHUB_OUTPUT
           else
-            echo "status=unknown" >> $GITHUB_OUTPUT
-            echo "color=lightgrey" >> $GITHUB_OUTPUT
-            echo "label=unknown" >> $GITHUB_OUTPUT
+            echo "status=failure" >> $GITHUB_OUTPUT
+            echo "badge=error" >> $GITHUB_OUTPUT
+            echo "message=Deploy ve rollback başarısız" >> $GITHUB_OUTPUT
           fi
 
-      - name: Rollback bilgisi hazırla
-        id: rollback-info
+      - name: Update deployment status (GitHub API)
+        if: github.event_name != 'schedule'
         run: |
-          if [ "${{ needs.rollback.result }}" = "success" ]; then
-            echo "executed=true" >> $GITHUB_OUTPUT
-            echo "timestamp=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> $GITHUB_OUTPUT
-            echo "reason=Deploy failed, auto rollback triggered" >> $GITHUB_OUTPUT
-          else
-            echo "executed=false" >> $GITHUB_OUTPUT
-            echo "timestamp=" >> $GITHUB_OUTPUT
-            echo "reason=" >> $GITHUB_OUTPUT
-          fi
+          STATUS="${{ steps.status.outputs.status }}"
+          MESSAGE="${{ steps.status.outputs.message }}"
+          echo "📊 Workflow sonucu: $STATUS - $MESSAGE"
 
-      - name: Deploy bilgisi hazırla
-        id: deploy-info
+      - name: Generate status badge (shields.io)
         run: |
-          if [ "${{ needs.deploy-firebase.result }}" = "success" ]; then
-            echo "executed=true" >> $GITHUB_OUTPUT
-            echo "timestamp=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> $GITHUB_OUTPUT
-            echo "commit=${{ github.sha }}" >> $GITHUB_OUTPUT
-          else
-            echo "executed=false" >> $GITHUB_OUTPUT
-            echo "timestamp=" >> $GITHUB_OUTPUT
-            echo "commit=" >> $GITHUB_OUTPUT
-          fi
+          BADGE="${{ steps.status.outputs.badge }}"
+          echo "![Workflow Status](https://img.shields.io/badge/workflow-${BADGE// /%20}-${BADGE})" > workflow-badge.md
+          cat workflow-badge.md
 
-      - name: Badge JSON'ı oluştur
-        run: |
-          ROLLBACK_INFO='{"executed": false}'
-          if [ "${{ steps.rollback-info.outputs.executed }}" = "true" ]; then
-            ROLLBACK_INFO=$(cat << RBEOF
-            {
-              "executed": true,
-              "timestamp": "${{ steps.rollback-info.outputs.timestamp }}",
-              "reason": "${{ steps.rollback-info.outputs.reason }}"
-            }
-            RBEOF
-            )
-          fi
-          
-          DEPLOY_INFO='{"executed": false}'
-          if [ "${{ steps.deploy-info.outputs.executed }}" = "true" ]; then
-            DEPLOY_INFO=$(cat << DBEOF
-            {
-              "executed": true,
-              "timestamp": "${{ steps.deploy-info.outputs.timestamp }}",
-              "commit": "${{ steps.deploy-info.outputs.commit }}"
-            }
-            DBEOF
-            )
-          fi
-          
-          cat > badge.json << EOF
-          {
-            "schemaVersion": 1,
-            "label": "${{ steps.status.outputs.label }}",
-            "message": "${{ steps.status.outputs.status }}",
-            "color": "${{ steps.status.outputs.color }}",
-            "timestamp": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
-            "runId": "${{ github.run_id }}",
-            "commitSha": "${{ github.sha }}",
-            "rollback": $ROLLBACK_INFO,
-            "deploy": $DEPLOY_INFO
-          }
-          EOF
-
-      - name: Badge artifact'ını yükle
+      - name: Upload status badge
         uses: actions/upload-artifact@v4
         with:
           name: workflow-badge
-          path: badge.json
-          retention-days: 7
+          path: workflow-badge.md
+          retention-days: 30
 
-  notify:
-    name: Bildirim
+  # 8. Cleanup ve raporlama
+  cleanup:
+    name: Cleanup & Report
     runs-on: ubuntu-latest
-    needs: [deploy-firebase, rollback]
+    timeout-minutes: 5
+    needs: [lint, test, build, deploy, rollback-on-failure, manual-rollback, update-status]
     if: always()
     steps:
-      - name: Sonuç özeti
+      - name: Workflow summary
         run: |
-          DEPLOY_RESULT="${{ needs.deploy-firebase.result }}"
-          ROLLBACK_RESULT="${{ needs.rollback.result }}"
-          
-          if [ "$DEPLOY_RESULT" = "success" ]; then
-            echo "✅ Deploy başarılı: https://${FIREBASE_PROJECT_ID}.web.app"
-            echo "Commit: ${{ github.sha }}"
-            echo "Run: ${{ github.run_id }}"
-          elif [ "$ROLLBACK_RESULT" = "success" ]; then
-            echo "🔄 Deploy başarısız, rollback başarılı"
-            echo "Commit: ${{ github.sha }}"
-            echo "Run: ${{ github.run_id }}"
-          else
-            echo "❌ Deploy ve rollback her ikisi de başarısız"
-            echo "Commit: ${{ github.sha }}"
-            echo "Run: ${{ github.run_id }}"
-            exit 1
+          echo "## 📋 Workflow Özeti" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Job | Durum |" >> $GITHUB_STEP_SUMMARY
+          echo "|-----|-------|" >> $GITHUB_STEP_SUMMARY
+          echo "| Lint | ${{ needs.lint.result }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Test | ${{ needs.test.result }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Build | ${{ needs.build.result }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Deploy | ${{ needs.deploy.result }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Rollback (auto) | ${{ needs.rollback-on-failure.result }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Rollback (manual) | ${{ needs.manual-rollback.result }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Status Update | ${{ needs.update-status.result }} |" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Tetikleyici:** ${{ github.event_name }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Commit:** ${{ github.sha }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Branch:** ${{ github.ref }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Zaman:** $(date -u +%Y-%m-%dT%H:%M:%SZ)" >> $GITHUB_STEP_SUMMARY
+
+      - name: Cleanup old artifacts
+        run: |
+          echo "🧹 Eski artifact'lar temizleniyor..."
+          # GitHub Actions otomatik olarak retention-days'e göre temizler
+          # Manuel temizleme gerekirse buraya eklenebilir
+
+      - name: Rate limit check
+        run: |
+          echo "🔍 API rate limit kontrolü..."
+          REMAINING=$(curl -s -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" https://api.github.com/rate_limit | jq -r '.resources.core.remaining')
+          RESET=$(curl -s -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" https://api.github.com/rate_limit | jq -r '.resources.core.reset')
+          echo "Kalan istek: $REMAINING"
+          echo "Reset zamanı: $(date -d @$RESET -u)"
+          if [ "$REMAINING" -lt 100 ]; then
+            echo "⚠️ Rate limit düşük: $REMAINING"
           fi
+
+# Concurrency control: aynı workflow'dan sadece bir tane çalışsın
+concurrency:
+  group: ci-cd-${{ github.ref }}
+  cancel-in-progress: true
+
+# Permissions
+permissions:
+  contents: read
+  actions: read
+  deployments: write
+  statuses: write
+  checks: write
+  pull-requests: write
+  id-token: write
