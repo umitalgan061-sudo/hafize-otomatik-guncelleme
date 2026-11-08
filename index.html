@@ -13,7 +13,9 @@
     <script type="module" src="js/servisler/logger.js"></script>
     <script type="module" src="js/servisler/performance.js"></script>
     <script type="module" src="js/servisler/notify.js"></script>
+    <script type="module" src="js/servisler/integration.js"></script>
     <script type="module" src="js/uygulama.js"></script>
+    <script type="module" src="js/test-runner.js"></script>
 </head>
 <body>
     <div class="container">
@@ -74,7 +76,7 @@
                 <div class="stat-value" id="ort-deploy-suresi">-</div>
                 <div class="stat-label">Ort. Deploy Süresi</div>
             </div>
-            <div class "stat">
+            <div class="stat">
                 <div class="stat-value" id="basari-orani">-</div>
                 <div class="stat-label">Başarı Oranı</div>
             </div>
@@ -84,18 +86,92 @@
             </div>
         </div>
 
-        <div class="stats" id="stats-performans" style="display:none;">
+        <div class="stats" id="stats-performans">
             <div class="stat">
-                <div class="stat-value" id="perf-lcp">-</div>
+                <div class="stat-value perf-metric" id="perf-lcp" data-metric="lcp">-</div>
                 <div class="stat-label">LCP</div>
             </div>
             <div class="stat">
-                <div class="stat-value" id="perf-fid">-</div>
+                <div class="stat-value perf-metric" id="perf-fid" data-metric="fid">-</div>
                 <div class="stat-label">FID</div>
             </div>
             <div class="stat">
-                <div class="stat-value" id="perf-cls">-</div>
+                <div class="stat-value perf-metric" id="perf-cls" data-metric="cls">-</div>
                 <div class="stat-label">CLS</div>
+            </div>
+        </div>
+
+        <!-- Test ve Debug Paneli (gizli, test modunda görünür) -->
+        <div class="integration-panel" id="integration-panel" style="display: none;" role="region" aria-label="Entegrasyon test paneli">
+            <div class="integration-panel-header">
+                <h3>🔧 Entegrasyon Test Paneli</h3>
+                <button class="integration-close-panel" type="button" aria-label="Test panelini kapat">×</button>
+            </div>
+            <div class="integration-panel-content">
+                <div class="test-section">
+                    <h4>Sistem Sağlığı</h4>
+                    <div class="health-indicators">
+                        <div class="health-indicator" data-service="github">
+                            <span class="health-label">GitHub API</span>
+                            <span class="health-status health-unknown" data-status="unknown">●</span>
+                        </div>
+                        <div class="health-indicator" data-service="firebase">
+                            <span class="health-label">Firebase</span>
+                            <span class="health-status health-unknown" data-status="unknown">●</span>
+                        </div>
+                        <div class="health-indicator" data-service="api">
+                            <span class="health-label">API Servisi</span>
+                            <span class="health-status health-unknown" data-status="unknown">●</span>
+                        </div>
+                        <div class="health-indicator" data-service="performance">
+                            <span class="health-label">Performans</span>
+                            <span class="health-status health-unknown" data-status="unknown">●</span>
+                        </div>
+                        <div class="health-indicator" data-service="logger">
+                            <span class="health-label">Logger</span>
+                            <span class="health-status health-unknown" data-status="unknown">●</span>
+                        </div>
+                        <div class="health-indicator" data-service="notify">
+                            <span class="health-label">Bildirim</span>
+                            <span class="health-status health-unknown" data-status="unknown">●</span>
+                        </div>
+                    </div>
+                </div>
+                <div class="test-section">
+                    <h4>Test Butonları</h4>
+                    <div class="test-buttons">
+                        <button class="test-btn" id="test-rollback" type="button" aria-label="Rollback testini çalıştır">
+                            <span class="test-btn-icon">🔄</span>
+                            <span class="test-btn-text">Rollback Testi</span>
+                        </button>
+                        <button class="test-btn" id="test-notify" type="button" aria-label="Bildirim testini çalıştır">
+                            <span class="test-btn-icon">🔔</span>
+                            <span class="test-btn-text">Bildirim Testi</span>
+                        </button>
+                        <button class="test-btn" id="test-logger" type="button" aria-label="Logger testini çalıştır">
+                            <span class="test-btn-icon">📋</span>
+                            <span class="test-btn-text">Logger Testi</span>
+                        </button>
+                        <button class="test-btn" id="test-performance" type="button" aria-label="Performans testini çalıştır">
+                            <span class="test-btn-icon">⚡</span>
+                            <span class="test-btn-text">Performans Testi</span>
+                        </button>
+                        <button class="test-btn test-btn-primary" id="test-all" type="button" aria-label="Tüm testleri çalıştır">
+                            <span class="test-btn-icon">🧪</span>
+                            <span class="test-btn-text">Tüm Testleri Çalıştır</span>
+                        </button>
+                        <button class="test-btn" id="force-refresh" type="button" aria-label="Zorlu veri yenileme">
+                            <span class="test-btn-icon">🔄</span>
+                            <span class="test-btn-text">Zorlu Yenileme</span>
+                        </button>
+                    </div>
+                </div>
+                <div class="test-section">
+                    <h4>Rollback Test Sonucu</h4>
+                    <div id="rollback-test-result" class="rollback-test-result">
+                        <span class="test-result-pending">Henüz test edilmedi</span>
+                    </div>
+                </div>
             </div>
         </div>
 
@@ -138,6 +214,12 @@
                 </div>
             </div>
         </div>
+    </div>
+
+    <!-- Test Modu Toggle (gizli, klavyeye Ctrl+Shift+T ile açılır) -->
+    <div class="test-mode-toggle" id="test-mode-toggle" role="button" tabindex="0" aria-label="Test modunu aç/kapat" aria-pressed="false" style="display: none;">
+        <span class="test-toggle-icon">🧪</span>
+        <span class="test-toggle-text">Test Modu</span>
     </div>
 
     <div class="fab-group" role="group" aria-label="Hızlı erişim">

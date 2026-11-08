@@ -1,11 +1,13 @@
 let githubServis, firebaseServis, apiServis;
+let integrationServis;
 let chartWorkflowTrend = null;
 let chartDeployTimes = null;
 
 async function initServices() {
-  if (typeof window.Config === 'undefined' || typeof window.GithubServis === 'undefined' || typeof window.FirebaseServis === 'undefined' || typeof window.ApiServis === 'undefined' || typeof window.LoggerServis === 'undefined' || typeof window.PerformanceServis === 'undefined') {
+  if (typeof window.Config === 'undefined' || typeof window.GithubServis === 'undefined' || typeof window.FirebaseServis === 'undefined' || typeof window.ApiServis === 'undefined' || typeof window.LoggerServis === 'undefined' || typeof window.PerformanceServis === 'undefined' || typeof window.NotifyServis === 'undefined' || typeof window.IntegrationServis === 'undefined') {
     throw new Error('Gerekli modüller henüz yüklenmedi');
   }
+  
   githubServis = new window.GithubServis(window.Config);
   firebaseServis = new window.FirebaseServis(window.Config);
   apiServis = new window.ApiServis(window.Config);
@@ -14,6 +16,20 @@ async function initServices() {
   new window.LoggerServis();
   window.performanceServis = new window.PerformanceServis(window.Config);
   window.performanceServis.init();
+  
+  // Notify servisini başlat
+  window.notifyServis = new window.NotifyServis();
+  
+  // Integration servisini oluştur ve başlat
+  integrationServis = new window.IntegrationServis(window.Config, {
+    githubServis,
+    firebaseServis,
+    apiServis,
+    loggerServis: window.loggerServis,
+    performanceServis: window.performanceServis,
+    notifyServis: window.notifyServis
+  });
+  window.integrationServis = integrationServis;
   
   // Global erişim için (debug amaçlı)
   window.githubServis = githubServis;
@@ -385,38 +401,11 @@ function drawCharts(runs, workflow) {
 
 async function loadDashboardData() {
   try {
-    const [githubVerisi, firebaseVerisi, workflowVerisi] = await Promise.allSettled([
-      githubServis.tumVeriyiAl(),
-      firebaseServis.tumVeriyiAl(),
-      apiServis.tumVeriyiAl()
-    ]);
-
-    const github = githubVerisi.status === 'fulfilled' ? githubVerisi.value : { commits: [], workflowRuns: [], repo: {} };
-    const firebase = firebaseVerisi.status === 'fulfilled' ? firebaseVerisi.value : { siteDurumu: 'Hata', sonDeploy: null, releases: [], site: null };
-    const workflow = workflowVerisi.status === 'fulfilled' ? workflowVerisi.value : { 
-      workflowDurumu: 'Bilinmiyor', 
-      workflowConclusion: 'Bilinmiyor', 
-      latestRun: null, 
-      workflowRuns: [], 
-      rollback: { executed: false } 
-    };
-
-    // Performans metriklerini al
-    let performanceMetrics = {};
-    if (window.performanceServis) {
-      performanceMetrics = window.performanceServis.getMetrics();
-    }
-
-    const birlesikVeri = {
-      github,
-      firebase,
-      workflow,
-      performance: performanceMetrics,
-      yuklenmeZamani: new Date()
-    };
-
-    updateUI(birlesikVeri);
-    return birlesikVeri;
+    // Integration servisi üzerinden tek veri akışı
+    const data = await integrationServis.tumVeriyiAl();
+    
+    updateUI(data);
+    return data;
   } catch (hata) {
     showError('Veri yüklenemedi: ' + hata.message);
     throw hata;
@@ -458,9 +447,9 @@ window.updateUI = updateUI;
 window.formatDateTR = formatDateTR;
 window.showError = showError;
 
-// FAB butonları için event listener'ları ekle
+// FAB butonları ve test butonları için event listener'ları ekle
 document.addEventListener('DOMContentLoaded', () => {
-  // Butonları seç
+  // FAB butonları
   const btnLogs = document.getElementById('btn-logs');
   const btnPerf = document.getElementById('btn-perf');
   const btnNotify = document.getElementById('btn-notify');
@@ -482,13 +471,172 @@ document.addEventListener('DOMContentLoaded', () => {
       if (window.notifyServis) window.notifyServis.showHistoryPanel();
     });
   }
-  
-  // Notify servisi henüz yüklenmediyse başlat
-  if (typeof window.NotifyServis !== 'undefined' && !window.notifyServis) {
-    window.notifyServis = new window.NotifyServis();
+
+  // Test butonları (integration panel)
+  const testRollbackBtn = document.getElementById('test-rollback');
+  const testNotifyBtn = document.getElementById('test-notify');
+  const testLoggerBtn = document.getElementById('test-logger');
+  const testPerformanceBtn = document.getElementById('test-performance');
+  const testAllBtn = document.getElementById('test-all');
+  const forceRefreshBtn = document.getElementById('force-refresh');
+  const integrationCloseBtn = document.querySelector('.integration-close-panel');
+  const integrationPanel = document.getElementById('integration-panel');
+  const testModeToggle = document.getElementById('test-mode-toggle');
+
+  // Test modu toggle (Ctrl+Shift+T ile açılır)
+  document.addEventListener('keydown', (e) => {
+    if (e.ctrlKey && e.shiftKey && e.key === 'T') {
+      e.preventDefault();
+      if (testModeToggle) {
+        const isPressed = testModeToggle.getAttribute('aria-pressed') === 'true';
+        testModeToggle.setAttribute('aria-pressed', (!isPressed).toString());
+        if (integrationPanel) {
+          integrationPanel.style.display = isPressed ? 'none' : 'block';
+        }
+      }
+    }
+  });
+
+  if (testModeToggle) {
+    testModeToggle.addEventListener('click', () => {
+      const isPressed = testModeToggle.getAttribute('aria-pressed') === 'true';
+      testModeToggle.setAttribute('aria-pressed', (!isPressed).toString());
+      if (integrationPanel) {
+        integrationPanel.style.display = isPressed ? 'none' : 'block';
+      }
+    });
   }
-  
-  // Performance update event listener
+
+  if (integrationCloseBtn && integrationPanel) {
+    integrationCloseBtn.addEventListener('click', () => {
+      integrationPanel.style.display = 'none';
+      if (testModeToggle) {
+        testModeToggle.setAttribute('aria-pressed', 'false');
+      }
+    });
+  }
+
+  const setButtonLoading = (btn, loading) => {
+    if (!btn) return;
+    if (loading) {
+      btn.classList.add('test-btn-running');
+      btn.disabled = true;
+    } else {
+      btn.classList.remove('test-btn-running');
+      btn.disabled = false;
+    }
+  };
+
+  const showRollbackResult = (result) => {
+    const resultEl = document.getElementById('rollback-test-result');
+    if (!resultEl) return;
+    
+    if (result.success) {
+      resultEl.innerHTML = `
+        <span class="test-result-success">✅ Başarılı</span>
+        <div class="test-result-detail">
+          Release: ${result.releaseName}<br>
+          Zaman: ${result.releaseTime ? new Date(result.releaseTime).toLocaleString('tr-TR') : '-'}
+        </div>
+      `;
+    } else {
+      resultEl.innerHTML = `
+        <span class="test-result-error">❌ Başarısız</span>
+        <div class="test-result-detail">${result.error || 'Bilinmeyen hata'}</div>
+      `;
+    }
+  };
+
+  if (testRollbackBtn) {
+    testRollbackBtn.addEventListener('click', async () => {
+      setButtonLoading(testRollbackBtn, true);
+      try {
+        const result = await integrationServis.rollbackTest();
+        showRollbackResult(result);
+      } catch (error) {
+        showRollbackResult({ success: false, error: error.message });
+      } finally {
+        setButtonLoading(testRollbackBtn, false);
+      }
+    });
+  }
+
+  if (testNotifyBtn) {
+    testNotifyBtn.addEventListener('click', () => {
+      setButtonLoading(testNotifyBtn, true);
+      window.testNotify();
+      setTimeout(() => setButtonLoading(testNotifyBtn, false), 500);
+    });
+  }
+
+  if (testLoggerBtn) {
+    testLoggerBtn.addEventListener('click', () => {
+      setButtonLoading(testLoggerBtn, true);
+      window.testLogger();
+      setTimeout(() => setButtonLoading(testLoggerBtn, false), 500);
+    });
+  }
+
+  if (testPerformanceBtn) {
+    testPerformanceBtn.addEventListener('click', () => {
+      setButtonLoading(testPerformanceBtn, true);
+      window.testPerformance();
+      setTimeout(() => setButtonLoading(testPerformanceBtn, false), 500);
+    });
+  }
+
+  if (testAllBtn) {
+    testAllBtn.addEventListener('click', async () => {
+      setButtonLoading(testAllBtn, true);
+      try {
+        if (!window.testRunner) {
+          window.testRunner = new window.TestRunner();
+        }
+        await window.testRunner.runAll();
+      } finally {
+        setButtonLoading(testAllBtn, false);
+      }
+    });
+  }
+
+  if (forceRefreshBtn) {
+    forceRefreshBtn.addEventListener('click', async () => {
+      setButtonLoading(forceRefreshBtn, true);
+      try {
+        await integrationServis.forceRefresh();
+        if (window.notifyServis) {
+          window.notifyServis.success('Yenileme', 'Veriler zorla yenilendi');
+        }
+      } catch (error) {
+        if (window.notifyServis) {
+          window.notifyServis.error('Yenileme Hatası', error.message);
+        }
+      } finally {
+        setButtonLoading(forceRefreshBtn, false);
+      }
+    });
+  }
+
+  // Health indicator güncelleme
+  const updateHealthIndicators = () => {
+    if (!integrationServis) return;
+    const health = integrationServis.getSystemHealth();
+    Object.entries(health).forEach(([service, status]) => {
+      const indicator = document.querySelector(`.health-indicator[data-service="${service}"] .health-status`);
+      if (indicator) {
+        indicator.className = `health-status health-${status}`;
+        indicator.setAttribute('data-status', status);
+        indicator.textContent = status === 'configured' || status === 'active' ? '●' : '○';
+      }
+    });
+  };
+
+  // Dashboard data loaded event listener
+  window.addEventListener('dashboard-data-loaded', (event) => {
+    updateHealthIndicators();
+  });
+
+  // Performance update event listener (integration servisinden gelen)
   window.addEventListener('performance-update', (event) => {
     if (event.detail) {
       const perf = event.detail;
@@ -542,7 +690,18 @@ document.addEventListener('DOMContentLoaded', () => {
       }
     }
   });
-  
+
+  // Rollback test triggered event listener
+  window.addEventListener('rollback-test-triggered', (event) => {
+    if (event.detail) {
+      showRollbackResult(event.detail);
+    }
+  });
+
+  // Periyodik health indicator güncelleme
+  setInterval(updateHealthIndicators, 30000);
+  updateHealthIndicators();
+
   if (typeof window.initApp === 'function') {
     window.initApp();
   }
