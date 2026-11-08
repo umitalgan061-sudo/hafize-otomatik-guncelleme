@@ -2,14 +2,14 @@ class GithubServis {
   constructor(config) {
     this.config = config;
     this.baseUrl = config.githubApiBase || 'https://api.github.com';
-    this.owner = config.repoOwner;
-    this.repo = config.repoName;
+    this.owner = config.REPO_OWNER;
+    this.repo = config.REPO_NAME;
     this.headers = {
       'Accept': 'application/vnd.github+json',
       'X-GitHub-Api-Version': '2022-11-28'
     };
-    if (config.githubToken) {
-      this.headers['Authorization'] = `Bearer ${config.githubToken}`;
+    if (config.GITHUB_TOKEN) {
+      this.headers['Authorization'] = `Bearer ${config.GITHUB_TOKEN}`;
     }
   }
 

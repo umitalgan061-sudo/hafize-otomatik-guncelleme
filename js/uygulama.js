@@ -1,12 +1,11 @@
-import { Config } from '../config.js';
-import { GithubServis } from './servisler/github.js';
-import { FirebaseServis } from './servisler/firebase.js';
-
 let githubServis, firebaseServis;
 
 async function initServices() {
-  githubServis = new GithubServis(Config);
-  firebaseServis = new FirebaseServis(Config);
+  if (typeof window.Config === 'undefined' || typeof window.GithubServis === 'undefined' || typeof window.FirebaseServis === 'undefined') {
+    throw new Error('Gerekli modüller henüz yüklenmedi');
+  }
+  githubServis = new window.GithubServis(window.Config);
+  firebaseServis = new window.FirebaseServis(window.Config);
 }
 
 function formatDateTR(date) {
@@ -113,3 +112,9 @@ window.loadDashboardData = loadDashboardData;
 window.updateUI = updateUI;
 window.formatDateTR = formatDateTR;
 window.showError = showError;
+
+document.addEventListener('DOMContentLoaded', () => {
+  if (typeof window.initApp === 'function') {
+    window.initApp();
+  }
+});
