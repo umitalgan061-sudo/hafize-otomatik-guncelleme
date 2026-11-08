@@ -29,7 +29,53 @@ async function initServices() {
     performanceServis: window.performanceServis,
     notifyServis: window.notifyServis
   });
+  integrationServis.init();
   window.integrationServis = integrationServis;
+  
+  // TestRunner örneğini oluştur
+  window.testRunner = new window.TestRunner(integrationServis);
+  
+  // Global test fonksiyonları
+  window.testNotify = () => {
+    if (window.notifyServis) {
+      window.notifyServis.success('Test Bildirimi', 'Success toast çalışıyor');
+      window.notifyServis.error('Test Bildirimi', 'Error toast çalışıyor');
+      window.notifyServis.warning('Test Bildirimi', 'Warning toast çalışıyor');
+      window.notifyServis.info('Test Bildirimi', 'Info toast çalışıyor');
+    }
+  };
+  
+  window.testLogger = () => {
+    if (window.loggerServis) {
+      window.loggerServis.error('Test hatası', { test: true, code: 'TEST_ERROR' });
+      window.loggerServis.warn('Test uyarısı', { test: true });
+      window.loggerServis.info('Test bilgisi', { test: true });
+      window.loggerServis.debug('Test debug', { test: true });
+    }
+  };
+  
+  window.testPerformance = () => {
+    if (window.performanceServis) {
+      if (!window.performanceServis.isInitialized) {
+        window.performanceServis.init();
+      }
+      const metrics = window.performanceServis.getMetrics();
+      window.performanceServis.reportToDashboard();
+      return metrics;
+    }
+  };
+  
+  window.testRollback = async () => {
+    if (window.integrationServis) {
+      return await window.integrationServis.rollbackTest();
+    }
+  };
+  
+  window.testAll = async () => {
+    if (window.testRunner) {
+      return await window.testRunner.runAll();
+    }
+  };
   
   // Global erişim için (debug amaçlı)
   window.githubServis = githubServis;
@@ -402,6 +448,9 @@ function drawCharts(runs, workflow) {
 async function loadDashboardData() {
   try {
     // Integration servisi üzerinden tek veri akışı
+    if (!integrationServis) {
+      throw new Error('IntegrationServis henüz başlatılmadı');
+    }
     const data = await integrationServis.tumVeriyiAl();
     
     updateUI(data);
