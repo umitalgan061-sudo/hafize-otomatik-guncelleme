@@ -5,10 +5,14 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Hafize Otomatik Güncelleme</title>
     <link rel="stylesheet" href="css/stil.css">
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
     <script type="module" src="js/config.js"></script>
     <script type="module" src="js/servisler/github.js"></script>
     <script type="module" src="js/servisler/firebase.js"></script>
     <script type="module" src="js/servisler/api.js"></script>
+    <script type="module" src="js/servisler/logger.js"></script>
+    <script type="module" src="js/servisler/performance.js"></script>
+    <script type="module" src="js/servisler/notify.js"></script>
     <script type="module" src="js/uygulama.js"></script>
 </head>
 <body>
@@ -39,7 +43,7 @@
             <p>Bitiş: <strong id="wf-end">-</strong></p>
         </div>
         
-        <div class="stats">
+        <div class="stats" id="stats-temel">
             <div class="stat">
                 <div class="stat-value" id="tur-sayisi">0</div>
                 <div class="stat-label">Başarılı Deploy</div>
@@ -53,11 +57,58 @@
                 <div class="stat-label">Site Durumu</div>
             </div>
         </div>
-        
+
+        <div class="charts-section">
+            <div class="chart-container">
+                <h3><span class="badge badge-info">Grafik</span> Workflow Başarı Trendi (Son 10 Çalışma)</h3>
+                <canvas id="chart-workflow-trend" height="120" role="img" aria-label="Workflow başarısızlık/başarı trendi grafiği"></canvas>
+            </div>
+            <div class="chart-container">
+                <h3><span class="badge badge-info">Grafik</span> Deploy Süreleri (Son 10 Çalışma)</h3>
+                <canvas id="chart-deploy-times" height="120" role="img" aria-label="Deploy süreleri grafiği"></canvas>
+            </div>
+        </div>
+
+        <div class="stats" id="stats-metrikler">
+            <div class="stat">
+                <div class="stat-value" id="ort-deploy-suresi">-</div>
+                <div class="stat-label">Ort. Deploy Süresi</div>
+            </div>
+            <div class="stat">
+                <div class="stat-value" id="basari-orani">-</div>
+                <div class="stat-label">Başarı Oranı</div>
+            </div>
+            <div class="stat">
+                <div class="stat-value" id="son24-deploy">-</div>
+                <div class="stat-label">Son 24s Deploy</div>
+            </div>
+        </div>
+
+        <div class="stats" id="stats-performans" style="display:none;">
+            <div class="stat">
+                <div class="stat-value" id="perf-lcp">-</div>
+                <div class="stat-label">LCP</div>
+            </div>
+            <div class="stat">
+                <div class="stat-value" id="perf-fid">-</div>
+                <div class="stat-label">FID</div>
+            </div>
+            <div class="stat">
+                <div class="stat-value" id="perf-cls">-</div>
+                <div class="stat-label">CLS</span>
+            </div>
+        </div>
+
         <div class="footer">
             <p>Geliştirici: <a href="https://github.com/umitalgan061-sudo" target="_blank" rel="noopener noreferrer">Ümit ALGAN</a></p>
             <p>Güçlendiren: <a href="https://firebase.google.com" target="_blank" rel="noopener noreferrer">Firebase Hosting</a> + <a href="https://github.com" target="_blank" rel="noopener noreferrer">GitHub Actions</a></p>
         </div>
+    </div>
+
+    <div class="fab-group" role="group" aria-label="Hızlı erişim">
+        <button class="fab fab-logs" id="btn-logs" type="button" aria-label="Hata logları" title="Hata Logları">📋</button>
+        <button class="fab fab-perf" id="btn-perf" type="button" aria-label="Performans" title="Performans">⚡</button>
+        <button class="fab fab-notify" id="btn-notify" type="button" aria-label="Bildirimler" title="Bildirimler">🔔</button>
     </div>
 </body>
 </html>

@@ -60,7 +60,7 @@ class FirebaseServis {
     return this.fetchWithRetry(url);
   }
 
-  async getReleases(pageSize = 10) {
+  async getReleases(pageSize = 20) {
     if (!this.projectId) {
       throw new Error('FIREBASE_PROJECT_ID yapılandırılmamış');
     }
@@ -68,11 +68,39 @@ class FirebaseServis {
     return this.fetchWithRetry(url);
   }
 
+  async getLastSuccessfulRelease() {
+    if (!this.projectId) {
+      throw new Error('FIREBASE_PROJECT_ID yapılandırılmamış');
+    }
+    const data = await this.getReleases(50);
+    const releases = data.releases || [];
+    return releases.find(r => r.type === 'RELEASE' && r.releaseTime) || null;
+  }
+
+  async triggerRollback(targetReleaseName) {
+    if (!this.projectId) {
+      throw new Error('FIREBASE_PROJECT_ID yapılandırılmamış');
+    }
+    if (!this.apiKey) {
+      throw new Error('FIREBASE_API_KEY yapılandırılmamış (Firebase Hosting REST API için gerekli)');
+    }
+    const url = `${this.baseUrl}/projects/${this.projectId}/sites/${this.projectId}/releases/${targetReleaseName}:clone`;
+    return this.fetchWithRetry(url, { method: 'POST' });
+  }
+
+  async getReleaseHistory(limit = 10) {
+    if (!this.projectId) {
+      throw new Error('FIREBASE_PROJECT_ID yapılandırılmamış');
+    }
+    const data = await this.getReleases(limit);
+    return data.releases || [];
+  }
+
   async tumVeriyiAl() {
     try {
       const [siteResponse, releasesResponse] = await Promise.allSettled([
         this.getSiteStatus(),
-        this.getReleases(10)
+        this.getReleases(20)
       ]);
 
       const site = siteResponse.status === 'fulfilled' ? siteResponse.value : null;
@@ -92,11 +120,15 @@ class FirebaseServis {
         }
       }
 
+      const lastSuccessfulRelease = releases.find(r => r.type === 'RELEASE' && r.releaseTime) || null;
+
       return {
         siteDurumu,
         sonDeploy,
         releases,
-        site
+        site,
+        lastSuccessfulRelease,
+        rollbackMevcut: !!lastSuccessfulRelease
       };
     } catch (error) {
       console.error('Firebase verisi alınırken kritik hata:', error);
@@ -104,7 +136,9 @@ class FirebaseServis {
         siteDurumu: 'Hata',
         sonDeploy: null,
         releases: [],
-        site: null
+        site: null,
+        lastSuccessfulRelease: null,
+        rollbackMevcut: false
       };
     }
   }

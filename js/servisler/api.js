@@ -71,6 +71,54 @@ class ApiServis {
     return data.workflow_runs?.[0] || null;
   }
 
+  async getWorkflowRunJobs(runId, perPage = 100) {
+    const url = `${this.githubBase}/repos/${this.owner}/${this.repo}/actions/runs/${runId}/jobs?per_page=${perPage}`;
+    const data = await this.fetchWithRetry(url);
+    return data.jobs || [];
+  }
+
+  async getWorkflowRunLogs(runId) {
+    const url = `${this.githubBase}/repos/${this.owner}/${this.repo}/actions/runs/${runId}/logs`;
+    const response = await fetch(url, { headers: this.headers });
+    
+    if (!response.ok) {
+      if (response.status === 403) {
+        throw new Error('Log erişimi için GitHub token yetkisi gerekli (actions:read)');
+      }
+      throw new Error(`Log indirme hatası: HTTP ${response.status}`);
+    }
+    
+    const blob = await response.blob();
+    return await blob.text();
+  }
+
+  async getWorkflowRunAttempt(runId, attemptNumber = 1) {
+    const url = `${this.githubBase}/repos/${this.owner}/${this.repo}/actions/runs/${runId}/attempts/${attemptNumber}`;
+    return this.fetchWithRetry(url);
+  }
+
+  async rerunWorkflowRun(runId) {
+    if (!this.token) {
+      throw new Error('Yeniden çalıştırma için GITHUB_TOKEN gerekli');
+    }
+    const url = `${this.githubBase}/repos/${this.owner}/${this.repo}/actions/runs/${runId}/rerun`;
+    const response = await fetch(url, {
+      method: 'POST',
+      headers: this.headers
+    });
+    
+    if (response.status === 403) {
+      throw new Error('Yeniden çalıştırma yetkisi yok (repo yönetici yetkisi gerekli)');
+    }
+    
+    if (!response.ok) {
+      const errorText = await response.text();
+      throw new Error(`Yeniden çalıştırma hatası: HTTP ${response.status} - ${errorText}`);
+    }
+    
+    return { success: true };
+  }
+
   async getFirebaseReleases(pageSize = 10) {
     if (!this.projectId) {
       throw new Error('FIREBASE_PROJECT_ID yapılandırılmamış');
@@ -137,7 +185,6 @@ class ApiServis {
         releases,
         lastSuccessfulRelease,
         rollbackMevcut: !!lastSuccessfulRelease,
-        // Dashboard uyumluluk alanları
         runs: workflowRuns,
         rollbackInfo: lastSuccessfulRelease ? { reason: 'Otomatik rollback hazır', timestamp: lastSuccessfulRelease.releaseTime ? new Date(lastSuccessfulRelease.releaseTime) : new Date() } : null
       };

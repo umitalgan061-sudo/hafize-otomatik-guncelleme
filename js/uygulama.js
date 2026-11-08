@@ -1,4 +1,6 @@
 let githubServis, firebaseServis, apiServis;
+let chartWorkflowTrend = null;
+let chartDeployTimes = null;
 
 async function initServices() {
   if (typeof window.Config === 'undefined' || typeof window.GithubServis === 'undefined' || typeof window.FirebaseServis === 'undefined' || typeof window.ApiServis === 'undefined') {
@@ -46,53 +48,43 @@ function updateUI(data) {
   const turSayisiEl = document.getElementById('tur-sayisi');
   const sonCommitEl = document.getElementById('son-commit');
   const siteDurumuEl = document.getElementById('site-durumu');
+  const ortDeployEl = document.getElementById('ort-deploy-suresi');
+  const basariOraniEl = document.getElementById('basari-orani');
+  const son24DeployEl = document.getElementById('son24-deploy');
 
   if (lastUpdateEl) {
     lastUpdateEl.textContent = 'Son güncelleme: ' + formatDateTR(yuklenmeZamani);
     lastUpdateEl.style.color = '#333';
   }
 
-  if (turSayisiEl && github.workflowRuns) {
-    const tamamlanan = github.workflowRuns.filter(r => r.conclusion === 'success').length;
-    turSayisiEl.textContent = tamamlanan.toString();
-  } else if (turSayisiEl && github.workflow_runs) {
-    const tamamlanan = github.workflow_runs.filter(r => r.conclusion === 'success').length;
+  const runs = github.workflowRuns || github.workflow_runs || [];
+  const commits = github.commits || [];
+
+  if (turSayisiEl) {
+    const tamamlanan = runs.filter(r => r.conclusion === 'success').length;
     turSayisiEl.textContent = tamamlanan.toString();
   }
 
-  // Workflow çalışma sayısı da göster (toplam)
-  const workflowSayisiEl = document.getElementById('workflow-sayisi');
-  if (workflowSayisiEl && github.workflowRuns) {
-    workflowSayisiEl.textContent = github.workflowRuns.length.toString();
-  }
-
-  if (sonCommitEl && github.commits && github.commits.length > 0) {
-    const commit = github.commits[0];
+  if (sonCommitEl && commits.length > 0) {
+    const commit = commits[0];
     const kisaSha = commit.sha ? commit.sha.substring(0, 7) : '-';
     sonCommitEl.textContent = kisaSha;
     sonCommitEl.title = commit.commit?.message || '';
   }
 
   if (siteDurumuEl && firebase) {
-    const durum = firebase.siteDurumu || 'Bilinmiyor';
-    const deployZamani = firebase.sonDeploy ? formatDateTR(firebase.sonDeploy) : '-';
-    siteDurumuEl.textContent = durum === 'ACTIVE' ? '✓ Canlı' : ('⚠ ' + durum);
-    siteDurumuEl.title = 'Son deploy: ' + deployZamani;
-  } else if (siteDurumuEl && firebase && firebase.site) {
-    // FirebaseServis tumVeriyiAl site alanı da döndürüyor
-    const durum = firebase.site?.type || 'Bilinmiyor';
+    const durum = firebase.siteDurumu || firebase.site?.type || 'Bilinmiyor';
     const deployZamani = firebase.sonDeploy ? formatDateTR(firebase.sonDeploy) : '-';
     siteDurumuEl.textContent = durum === 'ACTIVE' ? '✓ Canlı' : ('⚠ ' + durum);
     siteDurumuEl.title = 'Son deploy: ' + deployZamani;
   }
 
-    // Workflow durumu badge'i ve rollback bilgisi
-    const workflowCard = document.getElementById('workflow-durum')?.closest('.status-card');
-    const statusCard = workflowCard?.querySelector('h3');
-    const detayCard = document.getElementById('workflow-detay');
+  // Workflow durum badge'i
+  const workflowCard = document.getElementById('workflow-durum')?.closest('.status-card');
+  const statusCard = workflowCard?.querySelector('h3');
+  
   if (statusCard && workflow.latestRun) {
     const run = workflow.latestRun;
-    let badgeHtml = '';
     let badgeClass = 'badge-info';
     let badgeText = 'Bilinmiyor';
 
@@ -120,9 +112,8 @@ function updateUI(data) {
         badgeText = run.status || 'Bilinmiyor';
     }
 
-    badgeHtml = `<span class="badge ${badgeClass}">${badgeText}</span>`;
+    const badgeHtml = `<span class="badge ${badgeClass}">${badgeText}</span>`;
     
-    // Mevcut "Aktif" badge'ini koru, workflow badge'ini yanına ekle
     if (!statusCard.querySelector('.workflow-badge')) {
       const workflowBadge = document.createElement('span');
       workflowBadge.className = 'workflow-badge';
@@ -131,6 +122,7 @@ function updateUI(data) {
     } else {
       statusCard.querySelector('.workflow-badge').innerHTML = badgeHtml;
     }
+  }
 
   // Workflow durum kartı (3. kart) güncelleme
   const workflowDurumBadge = document.getElementById('workflow-durum');
@@ -181,17 +173,16 @@ function updateUI(data) {
     workflowZamanEl.textContent = zaman ? formatDateTR(zaman) : '-';
   }
 
-  // Rollback bilgisi varsa göster (apiServis.tumVeriyiAl'dan gelen rollback objesi)
+  // Rollback bilgisi
   if (workflow.rollback && workflow.rollback.executed) {
     let rollbackEl = document.getElementById('rollback-info');
     if (!rollbackEl) {
       rollbackEl = document.createElement('div');
       rollbackEl.id = 'rollback-info';
       rollbackEl.className = 'rollback-card';
-      // 3. status-card'in sonrasına ekle
-      const workflowCard = document.querySelector('.status-card:nth-of-type(3)');
-      if (workflowCard) {
-        workflowCard.parentNode.insertBefore(rollbackEl, workflowCard.nextSibling);
+      const workflowCardEl = document.querySelector('.status-card:nth-of-type(3)');
+      if (workflowCardEl) {
+        workflowCardEl.parentNode.insertBefore(rollbackEl, workflowCardEl.nextSibling);
       } else {
         document.querySelector('.container').appendChild(rollbackEl);
       }
@@ -202,7 +193,189 @@ function updateUI(data) {
     const rollbackEl = document.getElementById('rollback-info');
     if (rollbackEl) rollbackEl.style.display = 'none';
   }
+
+  // Metrik kartları ve grafikler
+  drawCharts(runs, workflow);
+  updateMetricCards(runs);
 }
+
+function updateMetricCards(runs) {
+  const ortDeployEl = document.getElementById('ort-deploy-suresi');
+  const basariOraniEl = document.getElementById('basari-orani');
+  const son24DeployEl = document.getElementById('son24-deploy');
+
+  if (runs.length === 0) {
+    if (ortDeployEl) ortDeployEl.textContent = '-';
+    if (basariOraniEl) basariOraniEl.textContent = '-';
+    if (son24DeployEl) son24DeployEl.textContent = '-';
+    return;
+  }
+
+  const completedRuns = runs.filter(r => r.status === 'completed');
+  const successfulRuns = completedRuns.filter(r => r.conclusion === 'success');
+  
+  // Ortalama deploy süresi (dakika)
+  let ortDeploy = '-';
+  if (successfulRuns.length > 0) {
+    const toplamSure = successfulRuns.reduce((sum, run) => {
+      const start = run.run_started_at ? new Date(run.run_started_at).getTime() : 0;
+      const end = run.updated_at ? new Date(run.updated_at).getTime() : 0;
+      return sum + (end - start);
+    }, 0);
+    const ortMs = toplamSure / successfulRuns.length;
+    const ortDakika = Math.round(ortMs / 60000);
+    ortDeploy = `${ortDakika} dk`;
+  }
+  if (ortDeployEl) ortDeployEl.textContent = ortDeploy;
+
+  // Başarı oranı
+  const basariOrani = completedRuns.length > 0 
+    ? Math.round((successfulRuns.length / completedRuns.length) * 100) + '%'
+    : '-';
+  if (basariOraniEl) basariOraniEl.textContent = basariOrani;
+
+  // Son 24 saat deploy sayısı
+  const now = Date.now();
+  const son24 = runs.filter(r => {
+    const start = r.run_started_at ? new Date(r.run_started_at).getTime() : 0;
+    return (now - start) < 24 * 60 * 60 * 1000;
+  }).length;
+  if (son24DeployEl) son24DeployEl.textContent = son24.toString();
+}
+
+function drawCharts(runs, workflow) {
+  const ctxTrend = document.getElementById('chart-workflow-trend');
+  const ctxDeploy = document.getElementById('chart-deploy-times');
+
+  if (!ctxTrend || !ctxDeploy || typeof Chart === 'undefined') {
+    console.warn('[Hafize] Chart.js yüklenmedi veya canvas elementleri yok');
+    return;
+  }
+
+  // Veriyi hazırla (eski -> yeni sırası)
+  const chartRuns = [...runs].reverse().slice(0, 10);
+  
+  // Workflow trend verisi: success=1, failure=0, diğer=null
+  const trendLabels = chartRuns.map(r => {
+    const date = r.run_started_at ? new Date(r.run_started_at) : new Date();
+    return date.toLocaleDateString('tr-TR', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' });
+  });
+  const trendData = chartRuns.map(r => {
+    if (r.conclusion === 'success') return 1;
+    if (r.conclusion === 'failure') return 0;
+    return null;
+  });
+
+  // Deploy süreleri verisi (dakika)
+  const deployLabels = trendLabels;
+  const deployData = chartRuns.map(r => {
+    if (r.status !== 'completed' || !r.run_started_at || !r.updated_at) return null;
+    const ms = new Date(r.updated_at).getTime() - new Date(r.run_started_at).getTime();
+    return Math.round(ms / 60000);
+  });
+
+  // Mevcut grafikleri temizle
+  if (chartWorkflowTrend) chartWorkflowTrend.destroy();
+  if (chartDeployTimes) chartDeployTimes.destroy();
+
+  // Workflow Başarı Trendi - Çizgi grafiği
+  chartWorkflowTrend = new Chart(ctxTrend, {
+    type: 'line',
+    data: {
+      labels: trendLabels,
+      datasets: [{
+        label: 'Başarı (1) / Başarısızlık (0)',
+        data: trendData,
+        borderColor: '#667eea',
+        backgroundColor: 'rgba(102, 126, 234, 0.1)',
+        fill: true,
+        tension: 0.3,
+        pointRadius: 4,
+        pointHoverRadius: 6,
+        pointBackgroundColor: trendData.map(v => v === 1 ? '#28a745' : v === 0 ? '#dc3545' : '#6c757d'),
+        pointBorderColor: '#fff',
+        pointBorderWidth: 2,
+        spanGaps: true
+      }]
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      plugins: {
+        legend: { display: false },
+        tooltip: {
+          callbacks: {
+            label: (context) => {
+              const val = context.raw;
+              if (val === 1) return '✓ Başarılı';
+              if (val === 0) return '✗ Başarısız';
+              return '⏳ Devam ediyor / Bilinmiyor';
+            }
+          }
+        }
+      },
+      scales: {
+        y: {
+          min: -0.1,
+          max: 1.1,
+          ticks: {
+            stepSize: 1,
+            callback: (value) => value === 1 ? 'Başarılı' : value === 0 ? 'Başarısız' : ''
+          },
+          grid: { color: 'rgba(0,0,0,0.05)' }
+        },
+        x: {
+          ticks: { maxRotation: 45, minRotation: 45, font: { size: 10 } },
+          grid: { display: false }
+        }
+      },
+      interaction: { intersect: false, mode: 'index' }
+    }
+  });
+
+  // Deploy Süreleri - Bar grafiği
+  chartDeployTimes = new Chart(ctxDeploy, {
+    type: 'bar',
+    data: {
+      labels: deployLabels,
+      datasets: [{
+        label: 'Deploy Süresi (dk)',
+        data: deployData,
+        backgroundColor: deployData.map(v => v === null ? 'rgba(108, 117, 125, 0.3)' : v <= 5 ? 'rgba(40, 167, 69, 0.7)' : v <= 10 ? 'rgba(255, 193, 7, 0.7)' : 'rgba(220, 53, 69, 0.7)'),
+        borderColor: deployData.map(v => v === null ? '#6c757d' : v <= 5 ? '#28a745' : v <= 10 ? '#ffc107' : '#dc3545'),
+        borderWidth: 1,
+        borderRadius: 4
+      }]
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      plugins: {
+        legend: { display: false },
+        tooltip: {
+          callbacks: {
+            label: (context) => {
+              const val = context.raw;
+              return val === null ? 'Veri yok' : `${val} dakika`;
+            }
+          }
+        }
+      },
+      scales: {
+        y: {
+          beginAtZero: true,
+          title: { display: true, text: 'Dakika', font: { size: 11 } },
+          grid: { color: 'rgba(0,0,0,0.05)' },
+          ticks: { font: { size: 10 } }
+        },
+        x: {
+          ticks: { maxRotation: 45, minRotation: 45, font: { size: 10 } },
+          grid: { display: false }
+        }
+      },
+      interaction: { intersect: false, mode: 'index' }
+    }
+  });
 }
 
 async function loadDashboardData() {
