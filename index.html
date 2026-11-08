@@ -74,7 +74,7 @@
                 <div class="stat-value" id="ort-deploy-suresi">-</div>
                 <div class="stat-label">Ort. Deploy Süresi</div>
             </div>
-            <div class="stat">
+            <div class "stat">
                 <div class="stat-value" id="basari-orani">-</div>
                 <div class="stat-label">Başarı Oranı</div>
             </div>
@@ -95,13 +95,48 @@
             </div>
             <div class="stat">
                 <div class="stat-value" id="perf-cls">-</div>
-                <div class="stat-label">CLS</span>
+                <div class="stat-label">CLS</div>
             </div>
         </div>
 
         <div class="footer">
             <p>Geliştirici: <a href="https://github.com/umitalgan061-sudo" target="_blank" rel="noopener noreferrer">Ümit ALGAN</a></p>
             <p>Güçlendiren: <a href="https://firebase.google.com" target="_blank" rel="noopener noreferrer">Firebase Hosting</a> + <a href="https://github.com" target="_blank" rel="noopener noreferrer">GitHub Actions</a></p>
+        </div>
+    </div>
+
+    <!-- Performance Panel -->
+    <div class="performance-panel" role="dialog" aria-label="Performans metrikleri" aria-modal="true">
+        <div class="performance-panel-header">
+            <h3>⚡ Performans Metrikleri</h3>
+            <button class="performance-close-panel" type="button" aria-label="Performans panelini kapat">×</button>
+        </div>
+        <div class="performance-panel-content">
+            <div class="performance-section">
+                <h4>Web Vitals</h4>
+                <div class="performance-grid">
+                    <div class="perf-metric" data-metric="lcp">
+                        <span class="perf-label">LCP</span>
+                        <span class="perf-value" id="perf-lcp-val">-</span>
+                    </div>
+                    <div class="perf-metric" data-metric="fid">
+                        <span class="perf-label">FID</span>
+                        <span class="perf-value" id="perf-fid-val">-</span>
+                    </div>
+                    <div class="perf-metric" data-metric="cls">
+                        <span class="perf-label">CLS</span>
+                        <span class="perf-value" id="perf-cls-val">-</span>
+                    </div>
+                    <div class="perf-metric" data-metric="fcp">
+                        <span class="perf-label">FCP</span>
+                        <span class="perf-value" id="perf-fcp-val">-</span>
+                    </div>
+                    <div class="perf-metric" data-metric="ttfb">
+                        <span class="perf-label">TTFB</span>
+                        <span class="perf-value" id="perf-ttfb-val">-</span>
+                    </div>
+                </div>
+            </div>
         </div>
     </div>
 

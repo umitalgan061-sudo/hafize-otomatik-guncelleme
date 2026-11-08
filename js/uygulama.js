@@ -3,12 +3,17 @@ let chartWorkflowTrend = null;
 let chartDeployTimes = null;
 
 async function initServices() {
-  if (typeof window.Config === 'undefined' || typeof window.GithubServis === 'undefined' || typeof window.FirebaseServis === 'undefined' || typeof window.ApiServis === 'undefined') {
+  if (typeof window.Config === 'undefined' || typeof window.GithubServis === 'undefined' || typeof window.FirebaseServis === 'undefined' || typeof window.ApiServis === 'undefined' || typeof window.LoggerServis === 'undefined' || typeof window.PerformanceServis === 'undefined') {
     throw new Error('Gerekli modüller henüz yüklenmedi');
   }
   githubServis = new window.GithubServis(window.Config);
   firebaseServis = new window.FirebaseServis(window.Config);
   apiServis = new window.ApiServis(window.Config);
+  
+  // Logger ve Performance servislerini başlat (modüller zaten window'a atıyor)
+  new window.LoggerServis();
+  window.performanceServis = new window.PerformanceServis(window.Config);
+  window.performanceServis.init();
   
   // Global erişim için (debug amaçlı)
   window.githubServis = githubServis;
@@ -396,10 +401,17 @@ async function loadDashboardData() {
       rollback: { executed: false } 
     };
 
+    // Performans metriklerini al
+    let performanceMetrics = {};
+    if (window.performanceServis) {
+      performanceMetrics = window.performanceServis.getMetrics();
+    }
+
     const birlesikVeri = {
       github,
       firebase,
       workflow,
+      performance: performanceMetrics,
       yuklenmeZamani: new Date()
     };
 
@@ -446,7 +458,91 @@ window.updateUI = updateUI;
 window.formatDateTR = formatDateTR;
 window.showError = showError;
 
+// FAB butonları için event listener'ları ekle
 document.addEventListener('DOMContentLoaded', () => {
+  // Butonları seç
+  const btnLogs = document.getElementById('btn-logs');
+  const btnPerf = document.getElementById('btn-perf');
+  const btnNotify = document.getElementById('btn-notify');
+  
+  if (btnLogs) {
+    btnLogs.addEventListener('click', () => {
+      if (window.loggerServis) window.loggerServis.showPanel();
+    });
+  }
+  
+  if (btnPerf) {
+    btnPerf.addEventListener('click', () => {
+      if (window.performanceServis) window.performanceServis.showPanel();
+    });
+  }
+  
+  if (btnNotify) {
+    btnNotify.addEventListener('click', () => {
+      if (window.notifyServis) window.notifyServis.showHistoryPanel();
+    });
+  }
+  
+  // Notify servisi henüz yüklenmediyse başlat
+  if (typeof window.NotifyServis !== 'undefined' && !window.notifyServis) {
+    window.notifyServis = new window.NotifyServis();
+  }
+  
+  // Performance update event listener
+  window.addEventListener('performance-update', (event) => {
+    if (event.detail) {
+      const perf = event.detail;
+      const perfLcpEl = document.getElementById('perf-lcp');
+      const perfFidEl = document.getElementById('perf-fid');
+      const perfClsEl = document.getElementById('perf-cls');
+      const statsPerformansEl = document.getElementById('stats-performans');
+      
+      if (perf.lcp && perfLcpEl) {
+        perfLcpEl.textContent = perf.lcp.value + 'ms';
+        perfLcpEl.className = 'stat-value ' + (perf.lcp.rating === 'good' ? 'badge-success' : perf.lcp.rating === 'needs-improvement' ? 'badge-warning' : 'badge-danger');
+      }
+      if (perf.fid && perfFidEl) {
+        perfFidEl.textContent = perf.fid.value + 'ms';
+        perfFidEl.className = 'stat-value ' + (perf.fid.rating === 'good' ? 'badge-success' : perf.fid.rating === 'needs-improvement' ? 'badge-warning' : 'badge-danger');
+      }
+      if (perf.cls && perfClsEl) {
+        perfClsEl.textContent = perf.cls.value;
+        perfClsEl.className = 'stat-value ' + (perf.cls.rating === 'good' ? 'badge-success' : perf.cls.rating === 'needs-improvement' ? 'badge-warning' : 'badge-danger');
+      }
+      if (statsPerformansEl) {
+        statsPerformansEl.style.display = 'grid';
+      }
+      
+      // Performance panelini de güncelle
+      const perfLcpVal = document.getElementById('perf-lcp-val');
+      const perfFidVal = document.getElementById('perf-fid-val');
+      const perfClsVal = document.getElementById('perf-cls-val');
+      const perfFcpVal = document.getElementById('perf-fcp-val');
+      const perfTtfbVal = document.getElementById('perf-ttfb-val');
+      
+      if (perf.lcp && perfLcpVal) {
+        perfLcpVal.textContent = perf.lcp.value + 'ms';
+        perfLcpVal.parentElement.className = 'perf-metric ' + (perf.lcp.rating === 'good' ? 'perf-good' : perf.lcp.rating === 'needs-improvement' ? 'perf-needs-improvement' : 'perf-poor');
+      }
+      if (perf.fid && perfFidVal) {
+        perfFidVal.textContent = perf.fid.value + 'ms';
+        perfFidVal.parentElement.className = 'perf-metric ' + (perf.fid.rating === 'good' ? 'perf-good' : perf.fid.rating === 'needs-improvement' ? 'perf-needs-improvement' : 'perf-poor');
+      }
+      if (perf.cls && perfClsVal) {
+        perfClsVal.textContent = perf.cls.value;
+        perfClsVal.parentElement.className = 'perf-metric ' + (perf.cls.rating === 'good' ? 'perf-good' : perf.cls.rating === 'needs-improvement' ? 'perf-needs-improvement' : 'perf-poor');
+      }
+      if (perf.fcp && perfFcpVal) {
+        perfFcpVal.textContent = perf.fcp.value + 'ms';
+        perfFcpVal.parentElement.className = 'perf-metric ' + (perf.fcp.rating === 'good' ? 'perf-good' : perf.fcp.rating === 'needs-improvement' ? 'perf-needs-improvement' : 'perf-poor');
+      }
+      if (perf.ttfb && perfTtfbVal) {
+        perfTtfbVal.textContent = perf.ttfb.value + 'ms';
+        perfTtfbVal.parentElement.className = 'perf-metric ' + (perf.ttfb.rating === 'good' ? 'perf-good' : perf.ttfb.rating === 'needs-improvement' ? 'perf-needs-improvement' : 'perf-poor');
+      }
+    }
+  });
+  
   if (typeof window.initApp === 'function') {
     window.initApp();
   }

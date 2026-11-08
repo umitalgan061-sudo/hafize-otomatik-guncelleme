@@ -15,6 +15,11 @@ class NotifyServis {
     this.createToastContainer();
     this.requestNotificationPermission();
     this.initAudioContext();
+    
+    // Global notify servisi olarak kaydet
+    if (typeof window !== 'undefined') {
+      window.notifyServis = this;
+    }
   }
 
   createToastContainer() {
