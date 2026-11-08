@@ -76,10 +76,10 @@ class GithubServis {
       const workflowRuns = workflowResponse.status === 'fulfilled' ? workflowResponse.value.workflow_runs : [];
       const repo = repoResponse.status === 'fulfilled' ? repoResponse.value : {};
 
-      return { commits, workflowRuns, repo };
+      return { commits, workflowRuns, workflow_runs: workflowRuns, repo };
     } catch (error) {
       console.error('GitHub verisi alınırken kritik hata:', error);
-      return { commits: [], workflowRuns: [], repo: {} };
+      return { commits: [], workflowRuns: [], workflow_runs: [], repo: {} };
     }
   }
 }
