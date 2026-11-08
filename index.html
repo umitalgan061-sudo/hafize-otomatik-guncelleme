@@ -4,107 +4,18 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Hafize Otomatik Güncelleme</title>
-    <style>
-        * {
-            margin: 0;
-            padding: 0;
-            box-sizing: border-box;
-        }
-        body {
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-            min-height: 100vh;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            padding: 20px;
-        }
-        .container {
-            background: white;
-            border-radius: 20px;
-            padding: 40px;
-            max-width: 600px;
-            width: 100%;
-            box-shadow: 0 20px 60px rgba(0,0,0,0.3);
-        }
-        h1 {
-            color: #333;
-            margin-bottom: 10px;
-            text-align: center;
-        }
-        .subtitle {
-            color: #666;
-            text-align: center;
-            margin-bottom: 30px;
-        }
-        .status-card {
-            background: #f8f9fa;
-            border-radius: 12px;
-            padding: 20px;
-            margin-bottom: 20px;
-            border-left: 4px solid #667eea;
-        }
-        .status-card h3 {
-            color: #333;
-            margin-bottom: 10px;
-            display: flex;
-            align-items: center;
-            gap: 10px;
-        }
-        .status-card p {
-            color: #666;
-            line-height: 1.6;
-        }
-        .badge {
-            display: inline-block;
-            padding: 4px 12px;
-            border-radius: 20px;
-            font-size: 12px;
-            font-weight: 600;
-            text-transform: uppercase;
-        }
-        .badge-active { background: #d4edda; color: #155724; }
-        .badge-info { background: #cce5ff; color: #004085; }
-        .stats {
-            display: grid;
-            grid-template-columns: repeat(3, 1fr);
-            gap: 15px;
-            margin-top: 20px;
-        }
-        .stat {
-            text-align: center;
-            padding: 15px;
-            background: #f8f9fa;
-            border-radius: 10px;
-        }
-        .stat-value {
-            font-size: 28px;
-            font-weight: 700;
-            color: #667eea;
-        }
-        .stat-label {
-            font-size: 12px;
-            color: #666;
-            text-transform: uppercase;
-        }
-        .footer {
-            text-align: center;
-            margin-top: 30px;
-            color: #999;
-            font-size: 14px;
-        }
-        .footer a {
-            color: #667eea;
-            text-decoration: none;
-        }
-        .pulse {
-            animation: pulse 2s infinite;
-        }
-        @keyframes pulse {
-            0%, 100% { opacity: 1; }
-            50% { opacity: 0.5; }
-        }
-    </style>
+    <link rel="stylesheet" href="css/stil.css">
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+    <script type="module" src="js/config.js"></script>
+    <script type="module" src="js/servisler/github.js"></script>
+    <script type="module" src="js/servisler/firebase.js"></script>
+    <script type="module" src="js/servisler/api.js"></script>
+    <script type="module" src="js/servisler/logger.js"></script>
+    <script type="module" src="js/servisler/performance.js"></script>
+    <script type="module" src="js/servisler/notify.js"></script>
+    <script type="module" src="js/servisler/integration.js"></script>
+    <script type="module" src="js/uygulama.js"></script>
+    <script type="module" src="js/test-runner.js"></script>
 </head>
 <body>
     <div class="container">
@@ -120,11 +31,24 @@
             <h3><span class="badge badge-info">Bilgi</span> Son Güncelleme</h3>
             <p id="last-update">Yükleniyor...</p>
         </div>
+
+        <div class="status-card">
+            <h3><span class="badge badge-info" id="workflow-durum">Yükleniyor...</span> GitHub Actions Workflow</h3>
+            <p>Son workflow çalışması: <strong id="son-workflow">-</strong></p>
+            <p>Çalışma zamanı: <strong id="workflow-zaman">-</strong></p>
+        </div>
+        <div class="status-card" id="workflow-detay" style="display:none;">
+            <h3><span class="badge badge-info">Detay</span> Workflow Bilgileri</h3>
+            <p>Durum: <strong id="wf-status">-</strong></p>
+            <p>Sonuç: <strong id="wf-conclusion">-</strong></p>
+            <p>Başlangıç: <strong id="wf-start">-</strong></p>
+            <p>Bitiş: <strong id="wf-end">-</strong></p>
+        </div>
         
-        <div class="stats">
+        <div class="stats" id="stats-temel">
             <div class="stat">
                 <div class="stat-value" id="tur-sayisi">0</div>
-                <div class="stat-label">Tamamlanan Tur</div>
+                <div class="stat-label">Başarılı Deploy</div>
             </div>
             <div class="stat">
                 <div class="stat-value" id="son-commit">-</div>
@@ -135,27 +59,173 @@
                 <div class="stat-label">Site Durumu</div>
             </div>
         </div>
-        
+
+        <div class="charts-section">
+            <div class="chart-container">
+                <h3><span class="badge badge-info">Grafik</span> Workflow Başarı Trendi (Son 10 Çalışma)</h3>
+                <canvas id="chart-workflow-trend" height="120" role="img" aria-label="Workflow başarısızlık/başarı trendi grafiği"></canvas>
+            </div>
+            <div class="chart-container">
+                <h3><span class="badge badge-info">Grafik</span> Deploy Süreleri (Son 10 Çalışma)</h3>
+                <canvas id="chart-deploy-times" height="120" role="img" aria-label="Deploy süreleri grafiği"></canvas>
+            </div>
+        </div>
+
+        <div class="stats" id="stats-metrikler">
+            <div class="stat">
+                <div class="stat-value" id="ort-deploy-suresi">-</div>
+                <div class="stat-label">Ort. Deploy Süresi</div>
+            </div>
+            <div class="stat">
+                <div class="stat-value" id="basari-orani">-</div>
+                <div class="stat-label">Başarı Oranı</div>
+            </div>
+            <div class="stat">
+                <div class="stat-value" id="son24-deploy">-</div>
+                <div class="stat-label">Son 24s Deploy</div>
+            </div>
+        </div>
+
+        <div class="stats" id="stats-performans">
+            <div class="stat">
+                <div class="stat-value perf-metric" id="perf-lcp" data-metric="lcp">-</div>
+                <div class="stat-label">LCP</div>
+            </div>
+            <div class="stat">
+                <div class="stat-value perf-metric" id="perf-fid" data-metric="fid">-</div>
+                <div class="stat-label">FID</div>
+            </div>
+            <div class="stat">
+                <div class="stat-value perf-metric" id="perf-cls" data-metric="cls">-</div>
+                <div class="stat-label">CLS</div>
+            </div>
+        </div>
+
+        <!-- Test ve Debug Paneli (gizli, test modunda görünür) -->
+        <div class="integration-panel" id="integration-panel" style="display: none;" role="region" aria-label="Entegrasyon test paneli">
+            <div class="integration-panel-header">
+                <h3>🔧 Entegrasyon Test Paneli</h3>
+                <button class="integration-close-panel" type="button" aria-label="Test panelini kapat">×</button>
+            </div>
+            <div class="integration-panel-content">
+                <div class="test-section">
+                    <h4>Sistem Sağlığı</h4>
+                    <div class="health-indicators">
+                        <div class="health-indicator" data-service="github">
+                            <span class="health-label">GitHub API</span>
+                            <span class="health-status health-unknown" data-status="unknown">●</span>
+                        </div>
+                        <div class="health-indicator" data-service="firebase">
+                            <span class="health-label">Firebase</span>
+                            <span class="health-status health-unknown" data-status="unknown">●</span>
+                        </div>
+                        <div class="health-indicator" data-service="api">
+                            <span class="health-label">API Servisi</span>
+                            <span class="health-status health-unknown" data-status="unknown">●</span>
+                        </div>
+                        <div class="health-indicator" data-service="performance">
+                            <span class="health-label">Performans</span>
+                            <span class="health-status health-unknown" data-status="unknown">●</span>
+                        </div>
+                        <div class="health-indicator" data-service="logger">
+                            <span class="health-label">Logger</span>
+                            <span class="health-status health-unknown" data-status="unknown">●</span>
+                        </div>
+                        <div class="health-indicator" data-service="notify">
+                            <span class="health-label">Bildirim</span>
+                            <span class="health-status health-unknown" data-status="unknown">●</span>
+                        </div>
+                    </div>
+                </div>
+                <div class="test-section">
+                    <h4>Test Butonları</h4>
+                    <div class="test-buttons">
+                        <button class="test-btn" id="test-rollback" type="button" aria-label="Rollback testini çalıştır">
+                            <span class="test-btn-icon">🔄</span>
+                            <span class="test-btn-text">Rollback Testi</span>
+                        </button>
+                        <button class="test-btn" id="test-notify" type="button" aria-label="Bildirim testini çalıştır">
+                            <span class="test-btn-icon">🔔</span>
+                            <span class="test-btn-text">Bildirim Testi</span>
+                        </button>
+                        <button class="test-btn" id="test-logger" type="button" aria-label="Logger testini çalıştır">
+                            <span class="test-btn-icon">📋</span>
+                            <span class="test-btn-text">Logger Testi</span>
+                        </button>
+                        <button class="test-btn" id="test-performance" type="button" aria-label="Performans testini çalıştır">
+                            <span class="test-btn-icon">⚡</span>
+                            <span class="test-btn-text">Performans Testi</span>
+                        </button>
+                        <button class="test-btn test-btn-primary" id="test-all" type="button" aria-label="Tüm testleri çalıştır">
+                            <span class="test-btn-icon">🧪</span>
+                            <span class="test-btn-text">Tüm Testleri Çalıştır</span>
+                        </button>
+                        <button class="test-btn" id="force-refresh" type="button" aria-label="Zorlu veri yenileme">
+                            <span class="test-btn-icon">🔄</span>
+                            <span class="test-btn-text">Zorlu Yenileme</span>
+                        </button>
+                    </div>
+                </div>
+                <div class="test-section">
+                    <h4>Rollback Test Sonucu</h4>
+                    <div id="rollback-test-result" class="rollback-test-result">
+                        <span class="test-result-pending">Henüz test edilmedi</span>
+                    </div>
+                </div>
+            </div>
+        </div>
+
         <div class="footer">
-            <p>Geliştirici: <a href="https://github.com/umitalgan061-sudo" target="_blank">Ümit ALGAN</a></p>
-            <p>Güçlendiren: <a href="https://firebase.google.com" target="_blank">Firebase Hosting</a> + <a href="https://github.com" target="_blank">GitHub Actions</a></p>
+            <p>Geliştirici: <a href="https://github.com/umitalgan061-sudo" target="_blank" rel="noopener noreferrer">Ümit ALGAN</a></p>
+            <p>Güçlendiren: <a href="https://firebase.google.com" target="_blank" rel="noopener noreferrer">Firebase Hosting</a> + <a href="https://github.com" target="_blank" rel="noopener noreferrer">GitHub Actions</a></p>
         </div>
     </div>
-    
-    <script>
-        // Sayfa yüklendiğinde zaman damgası göster
-        const now = new Date();
-        const options = { 
-            year: 'numeric', month: 'long', day: 'numeric',
-            hour: '2-digit', minute: '2-digit', second: '2-digit',
-            timeZone: 'Europe/Istanbul'
-        };
-        document.getElementById('last-update').textContent = 'Sayfa yüklendi: ' + now.toLocaleString('tr-TR', options);
-        
-        // Simüle edilmiş veriler (gerçek veriler GitHub API ve Firebase'den gelecek)
-        document.getElementById('tur-sayisi').textContent = '1';
-        document.getElementById('son-commit').textContent = 'a1b2c3d';
-        document.getElementById('site-durumu').textContent = '✓ Canlı';
-    </script>
+
+    <!-- Performance Panel -->
+    <div class="performance-panel" role="dialog" aria-label="Performans metrikleri" aria-modal="true">
+        <div class="performance-panel-header">
+            <h3>⚡ Performans Metrikleri</h3>
+            <button class="performance-close-panel" type="button" aria-label="Performans panelini kapat">×</button>
+        </div>
+        <div class="performance-panel-content">
+            <div class="performance-section">
+                <h4>Web Vitals</h4>
+                <div class="performance-grid">
+                    <div class="perf-metric" data-metric="lcp">
+                        <span class="perf-label">LCP</span>
+                        <span class="perf-value" id="perf-lcp-val">-</span>
+                    </div>
+                    <div class="perf-metric" data-metric="fid">
+                        <span class="perf-label">FID</span>
+                        <span class="perf-value" id="perf-fid-val">-</span>
+                    </div>
+                    <div class="perf-metric" data-metric="cls">
+                        <span class="perf-label">CLS</span>
+                        <span class="perf-value" id="perf-cls-val">-</span>
+                    </div>
+                    <div class="perf-metric" data-metric="fcp">
+                        <span class="perf-label">FCP</span>
+                        <span class="perf-value" id="perf-fcp-val">-</span>
+                    </div>
+                    <div class="perf-metric" data-metric="ttfb">
+                        <span class="perf-label">TTFB</span>
+                        <span class="perf-value" id="perf-ttfb-val">-</span>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Test Modu Toggle (gizli, klavyeye Ctrl+Shift+T ile açılır) -->
+    <div class="test-mode-toggle" id="test-mode-toggle" role="button" tabindex="0" aria-label="Test modunu aç/kapat" aria-pressed="false" style="display: none;">
+        <span class="test-toggle-icon">🧪</span>
+        <span class="test-toggle-text">Test Modu</span>
+    </div>
+
+    <div class="fab-group" role="group" aria-label="Hızlı erişim">
+        <button class="fab fab-logs" id="btn-logs" type="button" aria-label="Hata logları" title="Hata Logları">📋</button>
+        <button class="fab fab-perf" id="btn-perf" type="button" aria-label="Performans" title="Performans">⚡</button>
+        <button class="fab fab-notify" id="btn-notify" type="button" aria-label="Bildirimler" title="Bildirimler">🔔</button>
+    </div>
 </body>
 </html>
