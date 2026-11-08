@@ -191,18 +191,26 @@ class TestRunner {
   async testRollback() {
     if (!this.integrationServis) throw new Error('IntegrationServis bulunamadı');
     
-    // Integration servisi üzerinden rollback testi
+    // Integration servisi üzerinden rollback testi (test modunda çalışır)
     const result = await this.integrationServis.rollbackTest();
     
     if (!result || typeof result.success === 'undefined') {
       throw new Error('Rollback testi geçersiz sonuç döndürdü');
     }
     
+    // Test modunda simulated true olmalı
+    const isTestMode = this.integrationServis.getTestMode();
+    if (isTestMode && !result.simulated) {
+      this.loggerServis?.warn('Rollback test: test modunda simulated flag bekleniyor', { result });
+    }
+    
     return {
       success: result.success,
       releaseName: result.releaseName,
       releaseTime: result.releaseTime,
-      error: result.error
+      error: result.error,
+      simulated: result.simulated,
+      siteVerified: result.siteVerified
     };
   }
 

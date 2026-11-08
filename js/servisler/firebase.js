@@ -85,7 +85,10 @@ class FirebaseServis {
       throw new Error('FIREBASE_API_KEY yapılandırılmamış (Firebase Hosting REST API için gerekli)');
     }
     const url = `${this.baseUrl}/projects/${this.projectId}/sites/${this.projectId}/releases/${targetReleaseName}:clone`;
-    return this.fetchWithRetry(url, { method: 'POST' });
+    return this.fetchWithRetry(url, { 
+      method: 'POST',
+      headers: { 'Authorization': `Bearer ${this.apiKey}` }
+    });
   }
 
   async getReleaseHistory(limit = 10) {

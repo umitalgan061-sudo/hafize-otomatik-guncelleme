@@ -229,6 +229,19 @@ class ApiServis {
     });
   }
 
+  /**
+   * Test/production modu için rollback trigger (IntegrationServis kullanır)
+   * @param {string} targetReleaseName - Hedef release adı
+   * @param {boolean} testMode - Test modu mu
+   */
+  async triggerRollbackWithMode(targetReleaseName, testMode = true) {
+    if (testMode) {
+      // Test modunda sadece simüle et
+      return { success: true, simulated: true, releaseName: targetReleaseName };
+    }
+    return this.triggerRollback(targetReleaseName);
+  }
+
   async deleteRelease(releaseName) {
     if (!this.projectId) {
       throw new Error('FIREBASE_PROJECT_ID yapılandırılmamış');
@@ -395,6 +408,57 @@ class ApiServis {
       resetAt: this._rateLimitReset,
       secondsUntilReset: this._rateLimitReset > now ? Math.ceil((this._rateLimitReset - now) / 1000) : 0
     };
+  }
+
+  // GitHub Actions Workflow manuel tetikleme
+  // POST /repos/{owner}/{repo}/actions/workflows/{workflow_id}/dispatches
+  async triggerWorkflowRun(workflowId, ref = 'main', inputs = {}) {
+    if (!this.token) {
+      throw new Error('Workflow tetikleme için GITHUB_TOKEN gerekli (repo scope)');
+    }
+    
+    const url = `${this.githubBase}/repos/${this.owner}/${this.repo}/actions/workflows/${workflowId}/dispatches`;
+    
+    const response = await fetch(url, {
+      method: 'POST',
+      headers: this.headers,
+      body: JSON.stringify({
+        ref,
+        inputs
+      })
+    });
+    
+    this._updateRateLimitInfo(response);
+    
+    if (response.status === 403) {
+      const waitTime = this._calculateWaitTime();
+      if (waitTime > 0) {
+        throw new Error(`Rate limit aşıldı. ${Math.ceil(waitTime / 1000)} saniye bekleyin.`);
+      }
+      throw new Error('Workflow tetikleme yetkisi yok. Token\'ın "workflow" scope\'una sahip olduğundan emin olun.');
+    }
+    
+    if (response.status === 404) {
+      throw new Error(`Workflow bulunamadı: ${workflowId}. Doğru workflow dosya adını (örn: ci-cd.yml) veya ID'yi kontrol edin.`);
+    }
+    
+    if (response.status === 422) {
+      const errorText = await response.text();
+      throw new Error(`Geçersiz istek: ${errorText}`);
+    }
+    
+    if (!response.ok) {
+      const errorText = await response.text();
+      throw new Error(`HTTP ${response.status}: ${errorText}`);
+    }
+    
+    // 204 No Content döner, başarılı demek
+    return { success: true, workflowId, ref, triggeredAt: new Date().toISOString() };
+  }
+
+  // Workflow run detaylarını al (izleme için)
+  async getWorkflowRunDetails(runId) {
+    return this.getWorkflowRun(runId);
   }
 }
 

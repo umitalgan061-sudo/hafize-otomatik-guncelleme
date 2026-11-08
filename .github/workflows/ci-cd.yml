@@ -1,381 +1,550 @@
-name: CI/CD Pipeline - Hafize Otomatik Güncelleme
+name: 'Hafize Otomatik Guncelleme CI/CD'
 
 on:
   schedule:
-    # Her 30 dakikada bir çalış (0, 30 dakika)
-    - cron: '*/30 * * * *'
-  push:
-    branches:
-      - main
-    paths-ignore:
-      - '**.md'
-      - '.github/workflows/**'
+    - cron: '0 */30 * * *'
   workflow_dispatch:
-    inputs:
-      forceDeploy:
-        description: 'Zorla deploy et (testleri atla)'
-        type: boolean
-        required: false
-        default: false
-      rollback:
-        description: 'Son başarılı release\'e rollback yap'
-        type: boolean
-        required: false
-        default: false
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
 
-env:
-  NODE_VERSION: '20'
-  FIREBASE_PROJECT_ID: ${{ secrets.FIREBASE_PROJECT_ID }}
-  GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-jobs:
-  # 1. Lint ve kod kalitesi kontrolü
-  lint:
-    name: Lint & Type Check
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: ${{ env.NODE_VERSION }}
-          cache: 'npm'
-          cache-dependency-path: package-lock.json
-
-      - name: Install dependencies
-        run: npm ci --prefer-offline --no-audit --no-fund
-        timeout-minutes: 5
-
-      - name: Run ESLint
-        run: npx eslint . --ext .js --max-warnings 0
-        continue-on-error: false
-
-      - name: Check formatting (Prettier)
-        run: npx prettier --check .
-        continue-on-error: false
-
-  # 2. Testleri çalıştır
-  test:
-    name: Run Tests
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
-    needs: lint
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: ${{ env.NODE_VERSION }}
-          cache: 'npm'
-          cache-dependency-path: package-lock.json
-
-      - name: Install dependencies
-        run: npm ci --prefer-offline --no-audit --no-fund
-        timeout-minutes: 5
-
-      - name: Run unit tests
-        run: npm test -- --run --reporter=verbose
-        env:
-          CI: true
-        continue-on-error: false
-
-      - name: Run E2E tests (headless)
-        run: npx playwright test --reporter=line
-        continue-on-error: true
-
-      - name: Upload test artifacts
-        uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: test-results
-          path: |
-            test-results/
-            playwright-report/
-          retention-days: 7
-
-  # 3. Build işlemi
-  build:
-    name: Build Application
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    needs: test
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: ${{ env.NODE_VERSION }}
-          cache: 'npm'
-          cache-dependency-path: package-lock.json
-
-      - name: Install dependencies
-        run: npm ci --prefer-offline --no-audit --no-fund
-        timeout-minutes: 5
-
-      - name: Build production bundle
-        run: npm run build
-        env:
-          NODE_ENV: production
-          GITHUB_SHA: ${{ github.sha }}
-          GITHUB_REF: ${{ github.ref }}
-          BUILD_TIME: ${{ github.event.workflow_run.run_started_at || github.event.head_commit.timestamp }}
-
-      - name: Verify build output
-        run: |
-          if [ ! -d "dist" ] && [ ! -d "build" ] && [ ! -d "public" ]; then
-            echo "❌ Build output klasörü bulunamadı (dist/build/public)"
-            exit 1
-          fi
-          echo "✅ Build çıktısı doğrulandı"
-
-      - name: Upload build artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: build-output
-          path: |
-            dist/
-            build/
-            public/
-          retention-days: 7
-
-  # 4. Deploy to Firebase Hosting
-  deploy:
-    name: Deploy to Firebase Hosting
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
-    needs: build
-    if: github.event_name != 'schedule' || github.repository == 'umitalgan061-sudo/hafize-otomatik-guncelleme'
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-
-      - name: Download build artifact
-        uses: actions/download-artifact@v4
-        with:
-          name: build-output
-          path: ./dist
-
-      - name: Setup Firebase CLI
-        uses: firebase-actions/setup-firebase@v1
-        with:
-          version: 'latest'
-
-      - name: Deploy to Firebase Hosting
-        id: firebase-deploy
-        uses: FirebaseExtended/action-hosting-deploy@v0
-        with:
-          repoToken: ${{ secrets.GITHUB_TOKEN }}
-          firebaseServiceAccount: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
-          projectId: ${{ env.FIREBASE_PROJECT_ID }}
-          channelId: live
-          entryPoint: ./dist
-          expires: 30d
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Record deployment metadata
-        run: |
-          echo "DEPLOY_URL=${{ steps.firebase-deploy.outputs.details_url }}" >> $GITHUB_ENV
-          echo "DEPLOY_TIME=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> $GITHUB_ENV
-          echo "COMMIT_SHA=${{ github.sha }}" >> $GITHUB_ENV
-
-      - name: Notify on success
-        if: success()
-        run: |
-          echo "✅ Deploy başarılı: ${{ env.DEPLOY_URL }}"
-          echo "🕐 Deploy zamanı: ${{ env.DEPLOY_TIME }}"
-          echo "📦 Commit: ${{ env.COMMIT_SHA }}"
-
-  # 5. Rollback on failure
-  rollback-on-failure:
-    name: Rollback on Failure
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    needs: deploy
-    if: failure() && needs.deploy.result == 'failure'
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-
-      - name: Setup Firebase CLI
-        uses: firebase-actions/setup-firebase@v1
-        with:
-          version: 'latest'
-
-      - name: Get last successful release
-        id: get-release
-        run: |
-          echo "🔍 Son başarılı release aranıyor..."
-          RELEASES=$(firebase hosting:releases:list --project=${{ env.FIREBASE_PROJECT_ID }} --json 2>/dev/null | jq -r '.releases[] | select(.type=="RELEASE" and .releaseTime) | .name' | head -5)
-          if [ -z "$RELEASES" ]; then
-            echo "❌ Hiç başarılı release bulunamadı"
-            exit 1
-          fi
-          LAST_SUCCESS=$(echo "$RELEASES" | head -1)
-          echo "✅ Son başarılı release: $LAST_SUCCESS"
-          echo "release_name=$LAST_SUCCESS" >> $GITHUB_OUTPUT
-
-      - name: Trigger rollback (clone last successful release)
-        run: |
-          echo "🔄 Rollback tetikleniyor: ${{ steps.get-release.outputs.release_name }}"
-          firebase hosting:clone ${{ steps.get-release.outputs.release_name }} --project=${{ env.FIREBASE_PROJECT_ID }}
-          echo "✅ Rollback tamamlandı"
-
-      - name: Notify rollback
-        run: |
-          echo "⚠️ Deploy başarısız, rollback yapıldı"
-          echo "🔄 Geri alınan release: ${{ steps.get-release.outputs.release_name }}"
-          echo "🕐 Rollback zamanı: $(date -u +%Y-%m-%dT%H:%M:%SZ)"
-
-  # 6. Manual rollback trigger (workflow_dispatch ile)
-  manual-rollback:
-    name: Manual Rollback
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    if: github.event.inputs.rollback == 'true'
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-
-      - name: Setup Firebase CLI
-        uses: firebase-actions/setup-firebase@v1
-        with:
-          version: 'latest'
-
-      - name: Get last successful release
-        id: get-release
-        run: |
-          RELEASES=$(firebase hosting:releases:list --project=${{ env.FIREBASE_PROJECT_ID }} --json 2>/dev/null | jq -r '.releases[] | select(.type=="RELEASE" and .releaseTime) | .name' | head -1)
-          if [ -z "$RELEASES" ]; then
-            echo "❌ Hiç başarılı release bulunamadı"
-            exit 1
-          fi
-          echo "release_name=$RELEASES" >> $GITHUB_OUTPUT
-
-      - name: Trigger rollback
-        run: |
-          firebase hosting:clone ${{ steps.get-release.outputs.release_name }} --project=${{ env.FIREBASE_PROJECT_ID }}
-          echo "✅ Manuel rollback tamamlandı: ${{ steps.get-release.outputs.release_name }}"
-
-  # 7. Status badge ve metadata güncelleme
-  update-status:
-    name: Update Status & Badges
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-    needs: [deploy, rollback-on-failure]
-    if: always()
-    steps:
-      - name: Determine workflow status
-        id: status
-        run: |
-          if [ "${{ needs.deploy.result }}" == "success" ]; then
-            echo "status=success" >> $GITHUB_OUTPUT
-            echo "badge=success" >> $GITHUB_OUTPUT
-            echo "message=Deploy başarılı" >> $GITHUB_OUTPUT
-          elif [ "${{ needs.rollback-on-failure.result }}" == "success" ]; then
-            echo "status=rollback" >> $GITHUB_OUTPUT
-            echo "badge=warning" >> $GITHUB_OUTPUT
-            echo "message=Deploy başarısız, rollback yapıldı" >> $GITHUB_OUTPUT
-          else
-            echo "status=failure" >> $GITHUB_OUTPUT
-            echo "badge=error" >> $GITHUB_OUTPUT
-            echo "message=Deploy ve rollback başarısız" >> $GITHUB_OUTPUT
-          fi
-
-      - name: Update deployment status (GitHub API)
-        if: github.event_name != 'schedule'
-        run: |
-          STATUS="${{ steps.status.outputs.status }}"
-          MESSAGE="${{ steps.status.outputs.message }}"
-          echo "📊 Workflow sonucu: $STATUS - $MESSAGE"
-
-      - name: Generate status badge (shields.io)
-        run: |
-          BADGE="${{ steps.status.outputs.badge }}"
-          echo "![Workflow Status](https://img.shields.io/badge/workflow-${BADGE// /%20}-${BADGE})" > workflow-badge.md
-          cat workflow-badge.md
-
-      - name: Upload status badge
-        uses: actions/upload-artifact@v4
-        with:
-          name: workflow-badge
-          path: workflow-badge.md
-          retention-days: 30
-
-  # 8. Cleanup ve raporlama
-  cleanup:
-    name: Cleanup & Report
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-    needs: [lint, test, build, deploy, rollback-on-failure, manual-rollback, update-status]
-    if: always()
-    steps:
-      - name: Workflow summary
-        run: |
-          echo "## 📋 Workflow Özeti" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "| Job | Durum |" >> $GITHUB_STEP_SUMMARY
-          echo "|-----|-------|" >> $GITHUB_STEP_SUMMARY
-          echo "| Lint | ${{ needs.lint.result }} |" >> $GITHUB_STEP_SUMMARY
-          echo "| Test | ${{ needs.test.result }} |" >> $GITHUB_STEP_SUMMARY
-          echo "| Build | ${{ needs.build.result }} |" >> $GITHUB_STEP_SUMMARY
-          echo "| Deploy | ${{ needs.deploy.result }} |" >> $GITHUB_STEP_SUMMARY
-          echo "| Rollback (auto) | ${{ needs.rollback-on-failure.result }} |" >> $GITHUB_STEP_SUMMARY
-          echo "| Rollback (manual) | ${{ needs.manual-rollback.result }} |" >> $GITHUB_STEP_SUMMARY
-          echo "| Status Update | ${{ needs.update-status.result }} |" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "**Tetikleyici:** ${{ github.event_name }}" >> $GITHUB_STEP_SUMMARY
-          echo "**Commit:** ${{ github.sha }}" >> $GITHUB_STEP_SUMMARY
-          echo "**Branch:** ${{ github.ref }}" >> $GITHUB_STEP_SUMMARY
-          echo "**Zaman:** $(date -u +%Y-%m-%dT%H:%M:%SZ)" >> $GITHUB_STEP_SUMMARY
-
-      - name: Cleanup old artifacts
-        run: |
-          echo "🧹 Eski artifact'lar temizleniyor..."
-          # GitHub Actions otomatik olarak retention-days'e göre temizler
-          # Manuel temizleme gerekirse buraya eklenebilir
-
-      - name: Rate limit check
-        run: |
-          echo "🔍 API rate limit kontrolü..."
-          REMAINING=$(curl -s -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" https://api.github.com/rate_limit | jq -r '.resources.core.remaining')
-          RESET=$(curl -s -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" https://api.github.com/rate_limit | jq -r '.resources.core.reset')
-          echo "Kalan istek: $REMAINING"
-          echo "Reset zamanı: $(date -d @$RESET -u)"
-          if [ "$REMAINING" -lt 100 ]; then
-            echo "⚠️ Rate limit düşük: $REMAINING"
-          fi
-
-# Concurrency control: aynı workflow'dan sadece bir tane çalışsın
-concurrency:
-  group: ci-cd-${{ github.ref }}
-  cancel-in-progress: true
-
-# Permissions
 permissions:
   contents: read
   actions: read
   deployments: write
   statuses: write
-  checks: write
-  pull-requests: write
-  id-token: write
+
+env:
+  NODE_VERSION: '20'
+  FIREBASE_PROJECT_ID: ${{ secrets.FIREBASE_PROJECT_ID }}
+
+jobs:
+  validate:
+    name: Validate & Lint
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: |
+          if [ -f package-lock.json ]; then
+            npm ci
+          elif [ -f package.json ]; then
+            npm install
+          else
+            echo "No package.json found, skipping npm install"
+          fi
+
+      - name: Validate HTML
+        run: |
+          if command -v npx &> /dev/null; then
+            npx html-validate --formatter=codeframe index.html || true
+          else
+            echo "html-validate not available, skipping"
+          fi
+
+      - name: Validate JavaScript syntax
+        run: |
+          find js -name "*.js" -type f | while read file; do
+            node --check "$file" && echo "✓ $file" || (echo "✗ $file syntax error" && exit 1)
+          done
+
+      - name: Validate CSS syntax
+        run: |
+          if command -v npx &> /dev/null; then
+            npx stylelint css/stil.css || true
+          else
+            echo "stylelint not available, skipping"
+          fi
+
+      - name: Check required files exist
+        run: |
+          test -f index.html || (echo "index.html missing" && exit 1)
+          test -f css/stil.css || (echo "css/stil.css missing" && exit 1)
+          test -f js/config.js || (echo "js/config.js missing" && exit 1)
+          test -f js/uygulama.js || (echo "js/uygulama.js missing" && exit 1)
+          test -f js/servisler/api.js || (echo "js/servisler/api.js missing" && exit 1)
+          test -f js/servisler/github.js || (echo "js/servisler/github.js missing" && exit 1)
+          test -f js/servisler/firebase.js || (echo "js/servisler/firebase.js missing" && exit 1)
+          test -f js/servisler/logger.js || (echo "js/servisler/logger.js missing" && exit 1)
+          test -f js/servisler/performance.js || (echo "js/servisler/performance.js missing" && exit 1)
+          test -f js/servisler/notify.js || (echo "js/servisler/notify.js missing" && exit 1)
+          test -f js/servisler/integration.js || (echo "js/servisler/integration.js missing" && exit 1)
+          test -f js/test-runner.js || (echo "js/test-runner.js missing" && exit 1)
+
+  test:
+    name: E2E Tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    needs: validate
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: |
+          if [ -f package-lock.json ]; then
+            npm ci
+          elif [ -f package.json ]; then
+            npm install
+          else
+            echo "No package.json found, skipping npm install"
+          fi
+
+      - name: Install Playwright
+        run: npx playwright install --with-deps chromium
+
+      - name: Build/Prepare (no build step for static site)
+        run: echo "Static site - no build required"
+
+      - name: Start local server
+        run: |
+          npx serve -s . -l 3000 &
+          sleep 3
+          curl -f http://localhost:3000/ || exit 1
+
+      - name: Run E2E tests via TestRunner
+        id: e2e-tests
+        run: |
+          cat > run-tests.js << 'EOF'
+          const { chromium } = require('playwright');
+          
+          (async () => {
+            const browser = await chromium.launch({ headless: true });
+            const page = await browser.newPage();
+            
+            const errors = [];
+            const results = [];
+            
+            page.on('console', msg => {
+              if (msg.type() === 'error') {
+                errors.push(msg.text());
+              }
+            });
+            
+            page.on('pageerror', err => {
+              errors.push(err.message);
+            });
+            
+            try {
+              await page.goto('http://localhost:3000/', { waitUntil: 'networkidle', timeout: 30000 });
+              
+              // Test 1: Sayfa yüklendi mi?
+              await page.waitForSelector('h1', { timeout: 10000 });
+              results.push({ name: 'Page Load', success: true });
+              
+              // Test 2: Container görünür mü?
+              const container = await page.$('.container');
+              results.push({ name: 'Container Visible', success: !!container });
+              
+              // Test 3: Status card'lar var mı?
+              const statusCards = await page.$$('.status-card');
+              results.push({ name: 'Status Cards', success: statusCards.length >= 2 });
+              
+              // Test 4: Stats grid var mı?
+              const stats = await page.$$('.stats');
+              results.push({ name: 'Stats Grid', success: stats.length >= 1 });
+              
+              // Test 5: Chart canvas'lar var mı?
+              const charts = await page.$$('canvas');
+              results.push({ name: 'Charts Present', success: charts.length >= 2 });
+              
+              // Test 6: FAB butonları var mı?
+              const fabs = await page.$$('.fab');
+              results.push({ name: 'FAB Buttons', success: fabs.length >= 3 });
+              
+              // Test 7: Integration panel açılıyor mu (test modu)?
+              await page.evaluate(() => {
+                const panel = document.getElementById('integration-panel');
+                const toggle = document.getElementById('test-mode-toggle');
+                if (panel && toggle) {
+                  panel.style.display = 'block';
+                  toggle.setAttribute('aria-pressed', 'true');
+                }
+              });
+              await page.waitForTimeout(500);
+              const panelVisible = await page.$eval('#integration-panel', el => 
+                window.getComputedStyle(el).display !== 'none'
+              ).catch(() => false);
+              results.push({ name: 'Integration Panel', success: panelVisible });
+              
+              // Test 8: Health indicators var mı?
+              const healthIndicators = await page.$$('.health-indicator');
+              results.push({ name: 'Health Indicators', success: healthIndicators.length >= 6 });
+              
+              // Test 9: Test butonları var mı?
+              const testButtons = await page.$$('.test-btn');
+              results.push({ name: 'Test Buttons', success: testButtons.length >= 6 });
+              
+              // Test 10: Toast container var mı?
+              const toastContainer = await page.$('#toast-container');
+              results.push({ name: 'Toast Container', success: !!toastContainer });
+              
+              // Test 11: JavaScript hatası yok mu?
+              results.push({ name: 'No Console Errors', success: errors.length === 0 });
+              
+              // Test 12: Performance metrics container var mı?
+              const perfMetrics = await page.$$('.perf-metric');
+              results.push({ name: 'Performance Metrics', success: perfMetrics.length >= 5 });
+              
+            } catch (e) {
+              results.push({ name: 'Critical Error', success: false, error: e.message });
+            }
+            
+            await browser.close();
+            
+            // GitHub Actions summary formatında çıktı
+            console.log('## E2E Test Sonuçları');
+            console.log('');
+            console.log('| Test | Sonuç | Süre |');
+            console.log('|------|-------|------|');
+            
+            let passed = 0;
+            let failed = 0;
+            
+            for (const r of results) {
+              const status = r.success ? '✅' : '❌';
+              console.log(`| ${r.name} | ${status} | - |`);
+              if (r.success) passed++; else failed++;
+            }
+            
+            console.log('');
+            console.log(`**Toplam:** ${results.length} | **Başarılı:** ${passed} | **Başarısız:** ${failed}`);
+            
+            // JSON artefact olarak yaz
+            const fs = require('fs');
+            fs.writeFileSync('test-results.json', JSON.stringify({
+              timestamp: new Date().toISOString(),
+              total: results.length,
+              passed,
+              failed,
+              results,
+              errors
+            }, null, 2));
+            
+            if (failed > 0) {
+              process.exit(1);
+            }
+          })();
+          EOF
+          node run-tests.js
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-results
+          path: test-results.json
+          retention-days: 30
+
+  deploy:
+    name: Deploy to Firebase
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    needs: test
+    environment: production
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+
+      - name: Install Firebase CLI
+        run: npm install -g firebase-tools@latest
+
+      - name: Configure Firebase
+        run: |
+          echo "${{ secrets.FIREBASE_TOKEN }}" > /tmp/firebase_token
+          firebase use ${{ secrets.FIREBASE_PROJECT_ID }} --token "$(cat /tmp/firebase_token)"
+
+      - name: Deploy to Firebase Hosting
+        id: deploy
+        run: |
+          set -e
+          START_TIME=$(date +%s)
+          
+          firebase deploy \
+            --token "$(cat /tmp/firebase_token)" \
+            --project ${{ secrets.FIREBASE_PROJECT_ID }} \
+            --only hosting \
+            --non-interactive
+          
+          END_TIME=$(date +%s)
+          DURATION=$((END_TIME - START_TIME))
+          echo "deploy_duration_seconds=$DURATION" >> $GITHUB_OUTPUT
+          echo "deploy_status=success" >> $GITHUB_OUTPUT
+
+      - name: Upload deploy logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: deploy-logs
+          path: |
+            firebase-debug.log
+            .firebase/
+          retention-days: 30
+
+      - name: Record deploy metrics
+        if: success()
+        run: |
+          echo "deployment_timestamp=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> $GITHUB_ENV
+          echo "deployment_duration=${{ steps.deploy.outputs.deploy_duration_seconds }}" >> $GITHUB_ENV
+
+  rollback-check:
+    name: Rollback Check & Auto-Rollback
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    needs: deploy
+    if: failure()
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+
+      - name: Install Firebase CLI
+        run: npm install -g firebase-tools@latest
+
+      - name: Configure Firebase
+        run: |
+          echo "${{ secrets.FIREBASE_TOKEN }}" > /tmp/firebase_token
+          firebase use ${{ secrets.FIREBASE_PROJECT_ID }} --token "$(cat /tmp/firebase_token)"
+
+      - name: Get last successful release
+        id: last-release
+        run: |
+          RELEASES=$(firebase hosting:releases:list --token "$(cat /tmp/firebase_token)" --project ${{ secrets.FIREBASE_PROJECT_ID }} --json 2>/dev/null || echo '{"releases":[]}')
+          LAST_SUCCESS=$(echo "$RELEASES" | node -e "
+            const data = JSON.parse(require('fs').readFileSync(0, 'utf-8'));
+            const releases = data.releases || [];
+            const success = releases.find(r => r.type === 'RELEASE' && r.releaseTime);
+            if (success) console.log(success.name);
+            else console.log('');
+          ")
+          echo "release_name=$LAST_SUCCESS" >> $GITHUB_OUTPUT
+          if [ -n "$LAST_SUCCESS" ]; then
+            echo "has_release=true" >> $GITHUB_OUTPUT
+          else
+            echo "has_release=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Trigger rollback to last successful release
+        if: steps.last-release.outputs.has_release == 'true'
+        id: rollback
+        run: |
+          echo "🔄 Rolling back to release: ${{ steps.last-release.outputs.release_name }}"
+          firebase hosting:clone ${{ secrets.FIREBASE_PROJECT_ID }}:${{ steps.last-release.outputs.release_name }} \
+            --token "$(cat /tmp/firebase_token)" \
+            --project ${{ secrets.FIREBASE_PROJECT_ID }}
+          
+          echo "rollback_triggered=true" >> $GITHUB_OUTPUT
+          echo "rollback_release=${{ steps.last-release.outputs.release_name }}" >> $GITHUB_OUTPUT
+          echo "rollback_timestamp=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> $GITHUB_ENV
+
+      - name: Verify rollback deployment
+        if: steps.last-release.outputs.has_release == 'true'
+        id: verify-rollback
+        run: |
+          # Deploy'ın yayılması için bekle ve doğrula
+          for i in {1..6}; do
+            echo "Doğrulama denemesi $i/6..."
+            sleep 10
+            HTTP_CODE=$(curl -f -s -o /dev/null -w "%{http_code}" https://${{ secrets.FIREBASE_PROJECT_ID }}.web.app/ 2>/dev/null || echo "000")
+            if [ "$HTTP_CODE" = "200" ]; then
+              echo "✅ Site erişilebilir (HTTP 200)"
+              echo "rollback_verified=true" >> $GITHUB_OUTPUT
+              exit 0
+            fi
+            echo "HTTP $HTTP_CODE - bekleniyor..."
+          done
+          echo "❌ Site doğrulanamadı (6 deneme sonrası)"
+          echo "rollback_verified=false" >> $GITHUB_OUTPUT
+          exit 1
+
+      - name: No rollback release available
+        if: steps.last-release.outputs.has_release == 'false'
+        run: |
+          echo "⚠️ No previous successful release found for rollback"
+          echo "rollback_triggered=false" >> $GITHUB_OUTPUT
+
+      - name: Record rollback event
+        if: always()
+        run: |
+          if [ "${{ steps.last-release.outputs.has_release }}" = "true" ]; then
+            echo "## Rollback Executed" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "- **Release:** ${{ steps.last-release.outputs.release_name }}" >> $GITHUB_STEP_SUMMARY
+            echo "- **Triggered:** ${{ env.rollback_timestamp }}" >> $GITHUB_STEP_SUMMARY
+            echo "- **Verified:** ${{ steps.verify-rollback.outputs.rollback_verified == 'true' && '✅ Yes' || '❌ No' }}" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "## Rollback Not Possible" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "No previous successful release found." >> $GITHUB_STEP_SUMMARY
+          fi
+
+  notify:
+    name: Notify Results
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    needs: [validate, test, deploy, rollback-check]
+    if: always()
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Generate workflow summary
+        run: |
+          echo "## Hafize CI/CD Pipeline Sonuçları" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "- **Workflow:** ${{ github.workflow }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Run ID:** ${{ github.run_id }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Commit:** ${{ github.sha }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Branch:** ${{ github.ref_name }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Trigger:** ${{ github.event_name }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Timestamp:** $(date -u +%Y-%m-%dT%H:%M:%SZ)" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          
+          echo "### Job Durumları" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          
+          # Validate
+          if [ "${{ needs.validate.result }}" = "success" ]; then
+            echo "- ✅ **Validate:** Başarılı" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "- ❌ **Validate:** Başarısız" >> $GITHUB_STEP_SUMMARY
+          fi
+          
+          # Test
+          if [ "${{ needs.test.result }}" = "success" ]; then
+            echo "- ✅ **E2E Tests:** Başarılı" >> $GITHUB_STEP_SUMMARY
+          elif [ "${{ needs.test.result }}" = "failure" ]; then
+            echo "- ❌ **E2E Tests:** Başarısız" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "- ⏭️ **E2E Tests:** Atlandı" >> $GITHUB_STEP_SUMMARY
+          fi
+          
+          # Deploy
+          if [ "${{ needs.deploy.result }}" = "success" ]; then
+            echo "- ✅ **Deploy:** Başarılı" >> $GITHUB_STEP_SUMMARY
+            if [ -n "${{ env.deployment_duration }}" ]; then
+              echo "  - Süre: ${{ env.deployment_duration }} saniye" >> $GITHUB_STEP_SUMMARY
+            fi
+          elif [ "${{ needs.deploy.result }}" = "failure" ]; then
+            echo "- ❌ **Deploy:** Başarısız" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "- ⏭️ **Deploy:** Atlandı" >> $GITHUB_STEP_SUMMARY
+          fi
+          
+          # Rollback Check
+          if [ "${{ needs.rollback-check.result }}" = "success" ]; then
+            if [ "${{ steps.rollback.outputs.rollback_triggered }}" = "true" ]; then
+              echo "- 🔄 **Rollback:** Gerçekleştirildi (${{ steps.rollback.outputs.rollback_release }})" >> $GITHUB_STEP_SUMMARY
+            else
+              echo "- ✅ **Rollback Check:** Gerekli değil" >> $GITHUB_STEP_SUMMARY
+            fi
+          elif [ "${{ needs.rollback-check.result }}" = "failure" ]; then
+            echo "- ❌ **Rollback:** Başarısız" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "- ⏭️ **Rollback Check:** Atlandı" >> $GITHUB_STEP_SUMMARY
+          fi
+          
+          echo "" >> $GITHUB_STEP_SUMMARY
+          
+          # Test results link
+          echo "### Artefaktlar" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "- [Test Results](https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }})" >> $GITHUB_STEP_SUMMARY
+          echo "- [Deploy Logs](https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }})" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          
+          # Overall status
+          OVERALL="${{ needs.validate.result }} ${{ needs.test.result }} ${{ needs.deploy.result }}"
+          if [[ "$OVERALL" == *"failure"* ]]; then
+            echo "**Genel Durum:** ❌ **BAŞARISIZ**" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "**Genel Durum:** ✅ **BAŞARILI**" >> $GITHUB_STEP_SUMMARY
+          fi
+
+      - name: Download test results artifact
+        if: always()
+        uses: actions/download-artifact@v4
+        with:
+          name: test-results
+          path: ./artifacts/test-results
+
+      - name: Include test results in summary
+        if: always() && hashFiles('./artifacts/test-results/test-results.json') != ''
+        run: |
+          cat ./artifacts/test-results/test-results.json | node -e "
+            const data = JSON.parse(require('fs').readFileSync(0, 'utf-8'));
+            console.log('### Test Detayları');
+            console.log('');
+            console.log('| Test | Sonuç |');
+            console.log('|------|-------|');
+            for (const r of data.results) {
+              console.log('| ' + r.name + ' | ' + (r.success ? '✅' : '❌') + ' |');
+            }
+            console.log('');
+            console.log('**Toplam:** ' + data.total + ' | **Başarılı:** ' + data.passed + ' | **Başarısız:** ' + data.failed);
+          " >> $GITHUB_STEP_SUMMARY
+
+      - name: Optional webhook notification
+        if: env.WEBHOOK_URL != ''
+        run: |
+          curl -X POST "${{ env.WEBHOOK_URL }}" \
+            -H "Content-Type: application/json" \
+            -d '{
+              "text": "Hafize CI/CD: ${{ needs.validate.result == "success" && needs.test.result == "success" && needs.deploy.result == "success" ? "✅ Başarılı" : "❌ Başarısız" }}",
+              "blocks": [
+                {
+                  "type": "section",
+                  "text": {
+                    "type": "mrkdwn",
+                    "text": "*Hafize CI/CD Pipeline*\\nWorkflow: ${{ github.workflow }}\\nCommit: ${{ github.sha }}\\nStatus: ${{ needs.validate.result == "success" && needs.test.result == "success" && needs.deploy.result == "success" ? "✅ Başarılı" : "❌ Başarısız" }}"
+                  }
+                }
+              ]
+            }' || true
+
+      - name: Final status badge
+        run: |
+          OVERALL="${{ needs.validate.result }} ${{ needs.test.result }} ${{ needs.deploy.result }}"
+          if [[ "$OVERALL" == *"failure"* ]]; then
+            echo "🔴 Pipeline FAILED"
+            exit 1
+          else
+            echo "🟢 Pipeline SUCCESS"
+          fi

@@ -2,6 +2,8 @@ let githubServis, firebaseServis, apiServis;
 let integrationServis;
 let chartWorkflowTrend = null;
 let chartDeployTimes = null;
+let workflowMonitorInterval = null;
+let lastKnownWorkflowRunId = null;
 
 async function initServices() {
   if (typeof window.Config === 'undefined' || typeof window.GithubServis === 'undefined' || typeof window.FirebaseServis === 'undefined' || typeof window.ApiServis === 'undefined' || typeof window.LoggerServis === 'undefined' || typeof window.PerformanceServis === 'undefined' || typeof window.NotifyServis === 'undefined' || typeof window.IntegrationServis === 'undefined') {
@@ -34,6 +36,9 @@ async function initServices() {
   
   // TestRunner örneğini oluştur
   window.testRunner = new window.TestRunner(integrationServis);
+  
+  // Workflow tetikleme ve izleme event listener'larını kur
+  setupWorkflowListeners();
   
   // Global test fonksiyonları
   window.testNotify = () => {
@@ -81,6 +86,205 @@ async function initServices() {
   window.githubServis = githubServis;
   window.firebaseServis = firebaseServis;
   window.apiServis = apiServis;
+}
+
+function setupWorkflowListeners() {
+  // Workflow run sonucunu dinleyen custom event listener
+  window.addEventListener('workflow-run-completed', async (event) => {
+    const { runId, conclusion, status } = event.detail || {};
+    console.log('[Hafize] Workflow run tamamlandı:', { runId, conclusion, status });
+    
+    if (window.loggerServis) {
+      window.loggerServis.info('Workflow run tamamlandı', { runId, conclusion, status });
+    }
+    
+    if (window.notifyServis) {
+      if (conclusion === 'success') {
+        window.notifyServis.success('Deploy Başarılı', `Workflow #${runId} başarıyla tamamlandı`);
+      } else if (conclusion === 'failure') {
+        window.notifyServis.error('Deploy Başarısız', `Workflow #${runId} başarısız oldu - Rollback tetikleniyor...`);
+        
+        // Deploy başarısızsa otomatik rollbackTest çağrısı
+        try {
+          if (window.integrationServis) {
+            const rollbackResult = await window.integrationServis.rollbackTest();
+            if (rollbackResult.success) {
+              window.notifyServis.success('Rollback Başarılı', `Otomatik rollback tamamlandı: ${rollbackResult.releaseName}`);
+            } else {
+              window.notifyServis.error('Rollback Başarısız', rollbackResult.error || 'Bilinmeyen hata');
+            }
+          }
+        } catch (rollbackError) {
+          window.notifyServis.error('Rollback Hatası', rollbackError.message);
+          if (window.loggerServis) {
+            window.loggerServis.error('Otomatik rollback hatası', { error: rollbackError.message, runId });
+          }
+        }
+      }
+    }
+    
+    // Dashboard'ı güncelle
+    await loadDashboardData();
+  });
+  
+  // Workflow tetikleme butonu event listener (DOM hazır olduğunda bağlanır)
+  document.addEventListener('DOMContentLoaded', () => {
+    const triggerBtn = document.getElementById('trigger-workflow');
+    if (triggerBtn) {
+      triggerBtn.addEventListener('click', async () => {
+        await triggerWorkflowManually();
+      });
+    }
+  });
+}
+
+// Manuel workflow tetikleme fonksiyonu
+async function triggerWorkflowManually() {
+  if (!apiServis) {
+    if (window.notifyServis) {
+      window.notifyServis.error('Hata', 'API servisi henüz hazır değil');
+    }
+    return;
+  }
+  
+  if (window.notifyServis) {
+    window.notifyServis.info('Workflow Tetikleniyor', 'Manuel workflow çalıştırılıyor...');
+  }
+  if (window.loggerServis) {
+    window.loggerServis.info('Manuel workflow tetikleme isteği');
+  }
+  
+  try {
+    // Workflow ID'sini al (genellikle workflow dosya adı veya ID)
+    // GitHub Actions API: POST /repos/{owner}/{repo}/actions/workflows/{workflow_id}/dispatches
+    const workflowId = 'ci-cd.yml'; // .github/workflows/ci-cd.yml
+    const result = await apiServis.triggerWorkflowRun(workflowId);
+    
+    if (window.notifyServis) {
+      window.notifyServis.success('Workflow Tetiklendi', 'Workflow başarıyla başlatıldı');
+    }
+    if (window.loggerServis) {
+      window.loggerServis.info('Workflow manuel tetiklendi', { workflowId, result });
+    }
+    
+    // Tetiklenen workflow'u izlemeye başla
+    startWorkflowMonitoring();
+    
+  } catch (error) {
+    if (window.notifyServis) {
+      window.notifyServis.error('Tetikleme Hatası', error.message);
+    }
+    if (window.loggerServis) {
+      window.loggerServis.error('Manuel workflow tetikleme hatası', { error: error.message });
+    }
+  }
+}
+
+// Workflow run'ını izleme (polling)
+function startWorkflowMonitoring() {
+  if (workflowMonitorInterval) {
+    clearInterval(workflowMonitorInterval);
+  }
+  
+  workflowMonitorInterval = setInterval(async () => {
+    try {
+      if (!apiServis) return;
+      
+      const latestRun = await apiServis.getLatestWorkflowRun();
+      if (!latestRun) return;
+      
+      // Yeni bir run başladıysa veya durum değiştiyse
+      if (latestRun.id !== lastKnownWorkflowRunId) {
+        lastKnownWorkflowRunId = latestRun.id;
+        console.log('[Hafize] Yeni workflow run algılandı:', latestRun.id);
+      }
+      
+      // Run tamamlandıysa event tetikle
+      if (latestRun.status === 'completed' && latestRun.id === lastKnownWorkflowRunId) {
+        clearInterval(workflowMonitorInterval);
+        workflowMonitorInterval = null;
+        
+        window.dispatchEvent(new CustomEvent('workflow-run-completed', {
+          detail: {
+            runId: latestRun.id,
+            conclusion: latestRun.conclusion,
+            status: latestRun.status,
+            workflowName: latestRun.name
+          }
+        }));
+      }
+    } catch (error) {
+      console.warn('[Hafize] Workflow izleme hatası:', error.message);
+    }
+  }, 10000); // Her 10 saniyede bir kontrol et
+}
+
+// Periyodik yenilemede workflow durumu kontrolü
+async function checkWorkflowStatusPeriodic() {
+  try {
+    if (!apiServis) return;
+    
+    const latestRun = await apiServis.getLatestWorkflowRun();
+    if (!latestRun) return;
+    
+    // UI'daki workflow durum badge'ini güncelle
+    updateWorkflowStatusBadge(latestRun);
+    
+    // Eğer bir run in_progress veya queued ise izlemeye başla
+    if ((latestRun.status === 'in_progress' || latestRun.status === 'queued') && !workflowMonitorInterval) {
+      lastKnownWorkflowRunId = latestRun.id;
+      startWorkflowMonitoring();
+    }
+  } catch (error) {
+    console.warn('[Hafize] Periyodik workflow durum kontrolü hatası:', error.message);
+  }
+}
+
+function updateWorkflowStatusBadge(run) {
+  const workflowDurumBadge = document.getElementById('workflow-durum');
+  const sonWorkflowEl = document.getElementById('son-workflow');
+  const workflowZamanEl = document.getElementById('workflow-zaman');
+  
+  if (workflowDurumBadge) {
+    let badgeClass = 'badge-info';
+    let badgeText = 'Bilinmiyor';
+
+    switch (run.status) {
+      case 'completed':
+        if (run.conclusion === 'success') {
+          badgeClass = 'badge-success';
+          badgeText = 'Başarılı ✓';
+        } else if (run.conclusion === 'failure') {
+          badgeClass = 'badge-danger';
+          badgeText = 'Başarısız ✗';
+        } else {
+          badgeClass = 'badge-warning';
+          badgeText = run.conclusion || 'Tamamlandı';
+        }
+        break;
+      case 'in_progress':
+      case 'queued':
+      case 'waiting':
+        badgeClass = 'badge-warning pulse';
+        badgeText = 'Çalışıyor ⏳';
+        break;
+      default:
+        badgeClass = 'badge-info';
+        badgeText = run.status || 'Bilinmiyor';
+    }
+
+    workflowDurumBadge.className = `badge ${badgeClass}`;
+    workflowDurumBadge.textContent = badgeText;
+  }
+
+  if (sonWorkflowEl) {
+    sonWorkflowEl.textContent = run.name || run.display_title || run.workflow_id || 'Bilinmiyor';
+  }
+
+  if (workflowZamanEl) {
+    const zaman = run.run_started_at || run.updated_at;
+    workflowZamanEl.textContent = zaman ? formatDateTR(zaman) : '-';
+  }
 }
 
 function formatDateTR(date) {
@@ -454,6 +658,10 @@ async function loadDashboardData() {
     const data = await integrationServis.tumVeriyiAl();
     
     updateUI(data);
+    
+    // Periyodik workflow durumu kontrolü
+    await checkWorkflowStatusPeriodic();
+    
     return data;
   } catch (hata) {
     showError('Veri yüklenemedi: ' + hata.message);
@@ -488,6 +696,13 @@ async function initApp() {
       showError('Yenileme hatası: ' + hata.message);
     }
   }, yenilemeAraligi);
+  
+  // Workflow izleme temizleme
+  window.addEventListener('beforeunload', () => {
+    if (workflowMonitorInterval) {
+      clearInterval(workflowMonitorInterval);
+    }
+  });
 }
 
 window.initApp = initApp;
@@ -532,15 +747,18 @@ document.addEventListener('DOMContentLoaded', () => {
   const integrationPanel = document.getElementById('integration-panel');
   const testModeToggle = document.getElementById('test-mode-toggle');
 
-  // Test modu toggle (Ctrl+Shift+T ile açılır)
+  // Test modu toggle (Ctrl+Shift+T ile açılır) - IntegrationServis ile senkronize
   document.addEventListener('keydown', (e) => {
     if (e.ctrlKey && e.shiftKey && e.key === 'T') {
       e.preventDefault();
-      if (testModeToggle) {
-        const isPressed = testModeToggle.getAttribute('aria-pressed') === 'true';
-        testModeToggle.setAttribute('aria-pressed', (!isPressed).toString());
+      if (integrationServis && typeof integrationServis.toggleTestMode === 'function') {
+        const newMode = integrationServis.toggleTestMode();
+        if (testModeToggle) {
+          testModeToggle.setAttribute('aria-pressed', newMode.toString());
+          testModeToggle.querySelector('.test-toggle-text').textContent = newMode ? 'Test Modu' : 'Production Modu';
+        }
         if (integrationPanel) {
-          integrationPanel.style.display = isPressed ? 'none' : 'block';
+          integrationPanel.style.display = newMode ? 'block' : 'none';
         }
       }
     }
@@ -548,12 +766,29 @@ document.addEventListener('DOMContentLoaded', () => {
 
   if (testModeToggle) {
     testModeToggle.addEventListener('click', () => {
-      const isPressed = testModeToggle.getAttribute('aria-pressed') === 'true';
-      testModeToggle.setAttribute('aria-pressed', (!isPressed).toString());
-      if (integrationPanel) {
-        integrationPanel.style.display = isPressed ? 'none' : 'block';
+      if (integrationServis && typeof integrationServis.toggleTestMode === 'function') {
+        const newMode = integrationServis.toggleTestMode();
+        testModeToggle.setAttribute('aria-pressed', newMode.toString());
+        testModeToggle.querySelector('.test-toggle-text').textContent = newMode ? 'Test Modu' : 'Production Modu';
+        if (integrationPanel) {
+          integrationPanel.style.display = newMode ? 'block' : 'none';
+        }
       }
     });
+  }
+
+  // Test modu başlangıç durumunu oku ve UI'ı ayarla
+  if (integrationServis && typeof integrationServis.getTestMode === 'function') {
+    const initialTestMode = integrationServis.getTestMode();
+    if (testModeToggle) {
+      testModeToggle.setAttribute('aria-pressed', initialTestMode.toString());
+      testModeToggle.querySelector('.test-toggle-text').textContent = initialTestMode ? 'Test Modu' : 'Production Modu';
+    }
+    if (integrationPanel) {
+      integrationPanel.style.display = initialTestMode ? 'block' : 'none';
+    }
+    // Test modu toggle'ü göster (Ctrl+Shift+T ipucu için)
+    testModeToggle.style.display = 'flex';
   }
 
   if (integrationCloseBtn && integrationPanel) {
@@ -687,56 +922,62 @@ document.addEventListener('DOMContentLoaded', () => {
 
   // Performance update event listener (integration servisinden gelen)
   window.addEventListener('performance-update', (event) => {
-    if (event.detail) {
-      const perf = event.detail;
-      const perfLcpEl = document.getElementById('perf-lcp');
-      const perfFidEl = document.getElementById('perf-fid');
-      const perfClsEl = document.getElementById('perf-cls');
-      const statsPerformansEl = document.getElementById('stats-performans');
-      
-      if (perf.lcp && perfLcpEl) {
-        perfLcpEl.textContent = perf.lcp.value + 'ms';
-        perfLcpEl.className = 'stat-value ' + (perf.lcp.rating === 'good' ? 'badge-success' : perf.lcp.rating === 'needs-improvement' ? 'badge-warning' : 'badge-danger');
+    if (!event.detail || typeof event.detail !== 'object') return;
+    
+    const perf = event.detail;
+    const statsPerformansEl = document.getElementById('stats-performans');
+    let hasAnyMetric = false;
+    
+    // Ana dashboard metrik kartları
+    const dashboardMetrics = {
+      lcp: { val: document.getElementById('perf-lcp') },
+      fid: { val: document.getElementById('perf-fid') },
+      cls: { val: document.getElementById('perf-cls') },
+      fcp: { val: document.getElementById('perf-fcp') },
+      ttfb: { val: document.getElementById('perf-ttfb') }
+    };
+    
+    // Performance panel metrikleri
+    const panelMetrics = {
+      lcp: { val: document.getElementById('perf-lcp-val') },
+      fid: { val: document.getElementById('perf-fid-val') },
+      cls: { val: document.getElementById('perf-cls-val') },
+      fcp: { val: document.getElementById('perf-fcp-val') },
+      ttfb: { val: document.getElementById('perf-ttfb-val') }
+    };
+    
+    Object.keys(dashboardMetrics).forEach(key => {
+      const metric = perf[key];
+      if (metric && typeof metric === 'object' && metric.value !== undefined && metric.value !== null) {
+        hasAnyMetric = true;
+        const unit = key === 'cls' ? '' : 'ms';
+        const displayValue = `${metric.value}${unit}`;
+        const rating = metric.rating || 'unknown';
+        
+        // Dashboard kart
+        const dashEl = dashboardMetrics[key].val;
+        if (dashEl) {
+          dashEl.textContent = displayValue;
+          dashEl.className = 'stat-value ' + (
+            rating === 'good' ? 'badge-success' :
+            rating === 'needs-improvement' ? 'badge-warning' : 'badge-danger'
+          );
+        }
+        
+        // Panel kart
+        const panelEl = panelMetrics[key].val;
+        if (panelEl) {
+          panelEl.textContent = displayValue;
+          panelEl.parentElement.className = 'perf-metric ' + (
+            rating === 'good' ? 'perf-good' :
+            rating === 'needs-improvement' ? 'perf-needs-improvement' : 'perf-poor'
+          );
+        }
       }
-      if (perf.fid && perfFidEl) {
-        perfFidEl.textContent = perf.fid.value + 'ms';
-        perfFidEl.className = 'stat-value ' + (perf.fid.rating === 'good' ? 'badge-success' : perf.fid.rating === 'needs-improvement' ? 'badge-warning' : 'badge-danger');
-      }
-      if (perf.cls && perfClsEl) {
-        perfClsEl.textContent = perf.cls.value;
-        perfClsEl.className = 'stat-value ' + (perf.cls.rating === 'good' ? 'badge-success' : perf.cls.rating === 'needs-improvement' ? 'badge-warning' : 'badge-danger');
-      }
-      if (statsPerformansEl) {
-        statsPerformansEl.style.display = 'grid';
-      }
-      
-      // Performance panelini de güncelle
-      const perfLcpVal = document.getElementById('perf-lcp-val');
-      const perfFidVal = document.getElementById('perf-fid-val');
-      const perfClsVal = document.getElementById('perf-cls-val');
-      const perfFcpVal = document.getElementById('perf-fcp-val');
-      const perfTtfbVal = document.getElementById('perf-ttfb-val');
-      
-      if (perf.lcp && perfLcpVal) {
-        perfLcpVal.textContent = perf.lcp.value + 'ms';
-        perfLcpVal.parentElement.className = 'perf-metric ' + (perf.lcp.rating === 'good' ? 'perf-good' : perf.lcp.rating === 'needs-improvement' ? 'perf-needs-improvement' : 'perf-poor');
-      }
-      if (perf.fid && perfFidVal) {
-        perfFidVal.textContent = perf.fid.value + 'ms';
-        perfFidVal.parentElement.className = 'perf-metric ' + (perf.fid.rating === 'good' ? 'perf-good' : perf.fid.rating === 'needs-improvement' ? 'perf-needs-improvement' : 'perf-poor');
-      }
-      if (perf.cls && perfClsVal) {
-        perfClsVal.textContent = perf.cls.value;
-        perfClsVal.parentElement.className = 'perf-metric ' + (perf.cls.rating === 'good' ? 'perf-good' : perf.cls.rating === 'needs-improvement' ? 'perf-needs-improvement' : 'perf-poor');
-      }
-      if (perf.fcp && perfFcpVal) {
-        perfFcpVal.textContent = perf.fcp.value + 'ms';
-        perfFcpVal.parentElement.className = 'perf-metric ' + (perf.fcp.rating === 'good' ? 'perf-good' : perf.fcp.rating === 'needs-improvement' ? 'perf-needs-improvement' : 'perf-poor');
-      }
-      if (perf.ttfb && perfTtfbVal) {
-        perfTtfbVal.textContent = perf.ttfb.value + 'ms';
-        perfTtfbVal.parentElement.className = 'perf-metric ' + (perf.ttfb.rating === 'good' ? 'perf-good' : perf.ttfb.rating === 'needs-improvement' ? 'perf-needs-improvement' : 'perf-poor');
-      }
+    });
+    
+    if (statsPerformansEl && hasAnyMetric) {
+      statsPerformansEl.style.display = 'grid';
     }
   });
 

@@ -626,7 +626,7 @@ h1 {
   cursor: pointer;
   box-shadow: 0 4px 12px rgba(0, 0, 0, 0.2);
   z-index: 1000;
-  transition: transform 0.2s, box-shadow 0.2s;
+  transition: transform 0.2s, box-shadow 0.2s, background 0.2s;
   border: none;
   font-size: 14px;
   font-weight: 500;
@@ -641,6 +641,20 @@ h1 {
 .test-mode-toggle:focus-visible {
   outline: 3px solid var(--primary);
   outline-offset: 3px;
+}
+
+.test-mode-toggle[aria-pressed="false"] {
+  background: #28a745;
+}
+
+.test-mode-toggle[aria-pressed="false"]:hover,
+.test-mode-toggle[aria-pressed="false"]:focus {
+  background: #218838;
+  box-shadow: 0 6px 20px rgba(40, 167, 69, 0.4);
+}
+
+.test-mode-toggle[aria-pressed="false"]:focus-visible {
+  outline: 3px solid #28a745;
 }
 
 .test-toggle-icon {
