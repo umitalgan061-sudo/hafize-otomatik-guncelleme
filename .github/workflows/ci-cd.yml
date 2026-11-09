@@ -1,8 +1,6 @@
 name: CI/CD Pipeline - Hafize Otomatik Güncelleme
 
 on:
-  schedule:
-    - cron: '*/30 * * * *'
   push:
     branches: [main]
   workflow_dispatch:
